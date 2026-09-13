@@ -5,9 +5,11 @@ Portafolios, Tech Business School - Universidad EIA.
 
 EDITEN los valores de identidad de más abajo antes de la primera entrega.
 """
+import pandas as pd
 import streamlit as st
 
 from src.auth import is_auth_configured, require_login
+from src.data import FREQUENCY_RULES, fetch_asset_data, resample_prices
 
 DEV_MODE = True
 
@@ -94,8 +96,44 @@ def main() -> None:
     render_disclaimer_gate()
 
     st.success(f"Sesión iniciada como {user_name} ({user_email})")
+
+    st.divider()
+    st.subheader("Datos: probar un activo (RF-05 a RF-07)")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ticker_input = st.text_input("Ticker", value="AAPL")
+    with col2:
+        start_date = st.date_input("Fecha inicial", value=pd.Timestamp("2023-01-01"))
+    with col3:
+        end_date = st.date_input("Fecha final", value=pd.Timestamp.today())
+
+    frequency = st.selectbox("Frecuencia", list(FREQUENCY_RULES.keys()))
+
+    if st.button("Descargar y limpiar"):
+        with st.spinner("Descargando..."):
+            result = fetch_asset_data(ticker_input, start_date, end_date)
+            if result.ok:
+                result.prices = resample_prices(result.prices, frequency)
+
+        if result.ok:
+            st.success(
+                f"{result.ticker}: {len(result.prices)} observaciones · "
+                f"fuente: {result.source} · moneda: {result.currency or 'N/D'} · "
+                f"zona horaria: {result.timezone or 'N/D'} · "
+                f"último dato: {result.prices.index.max().date()}"
+            )
+            if result.dropped_rows:
+                st.warning(
+                    f"Se descartaron {result.dropped_rows} filas inválidas "
+                    "(faltantes o precios no positivos)."
+                )
+            st.dataframe(result.prices.tail(20))
+        else:
+            st.error(f"{result.ticker}: {result.error}")
+
     st.write(
-        "Aquí seguirá el resto de la aplicación: datos, análisis histórico, "
+        "Aquí seguirá el resto de la aplicación: análisis histórico, "
         "forecasting, riesgo y comparación de activos (ver roadmap)."
     )
 
