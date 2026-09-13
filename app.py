@@ -10,18 +10,30 @@ import streamlit as st
 
 from src.analytics import (
     FREQUENCY_PERIODS_PER_YEAR,
+    MIN_DIAGNOSTICS_N,
     descriptive_stats,
     drawdown_series,
     log_returns,
     max_drawdown,
     recent_window_stats,
+    run_diagnostics,
 )
 from src.auth import is_auth_configured, require_login
 from src.charts import price_chart, return_chart
 from src.data import FREQUENCY_RULES, fetch_asset_data, resample_prices
 
+# ---------------------------------------------------------------------------
+# MODO DESARROLLO: mientras no tengan credenciales OIDC reales, dejen esto en
+# True para poder probar el resto de la app (datos, análisis, forecasting,
+# riesgo, comparación) sin quedar bloqueados por el login. Antes de la
+# entrega final, si el profesor confirma que el login es obligatorio, pasen
+# esto a False y usen las credenciales reales.
+# ---------------------------------------------------------------------------
 DEV_MODE = True
 
+# ---------------------------------------------------------------------------
+# IDENTIDAD DEL EQUIPO (RF-01) — EDITAR ANTES DE ENTREGAR
+# ---------------------------------------------------------------------------
 SYSTEM_NAME = "EDITAR: Nombre del sistema"
 TEAM_NAME = "EDITAR: Nombre del equipo"
 MEMBERS = [
@@ -39,6 +51,7 @@ EXECUTION_POLICY_SUMMARY = (
     "Metodología para la política de ejecución completa."
 )
 
+# Texto mínimo obligatorio (guía, sección 3.3). No reducir su alcance.
 DISCLAIMER_TEXT = (
     "Esta aplicación fue desarrollada exclusivamente como actividad evaluativa del "
     "curso Teoría Moderna de Portafolios de Tech Business School - Universidad EIA. "
@@ -62,6 +75,11 @@ def render_header() -> None:
 
 
 def render_disclaimer_gate() -> None:
+    """
+    Bloquea el análisis hasta que el usuario acepte, por separado, la
+    autorización de privacidad y el disclaimer académico (sección 3.3).
+    Detiene la ejecución (st.stop) si falta alguna de las dos.
+    """
     st.subheader("Antes de continuar")
     st.warning(DISCLAIMER_TEXT)
 
@@ -79,6 +97,9 @@ def render_disclaimer_gate() -> None:
 
     if not (privacy_ok and disclaimer_ok):
         st.stop()
+
+    # TODO (Fase 9): registrar ambos consentimientos como eventos separados
+    # y persistirlos junto con perfil/sesión/evento/outbox en una transacción.
 
 
 def render_historical_analysis() -> None:
@@ -105,7 +126,9 @@ def render_historical_analysis() -> None:
 
     st.latex(r"g_t = \ln\left(\frac{P_t}{P_{t-1}}\right)")
 
-    tab_price, tab_returns, tab_stats = st.tabs(["Precio", "Rendimientos", "Descriptivos"])
+    tab_price, tab_returns, tab_stats, tab_diag = st.tabs(
+        ["Precio", "Rendimientos", "Descriptivos", "Diagnósticos"]
+    )
 
     with tab_price:
         st.plotly_chart(
@@ -163,6 +186,33 @@ def render_historical_analysis() -> None:
         st.metric("Máxima caída histórica (drawdown)", f"{max_drawdown(prices):.2%}")
         st.line_chart(dd, height=200)
 
+    with tab_diag:
+        st.markdown(
+            "Contrastes de los supuestos que sustentan el uso de modelos "
+            "**homocedásticos** (sección 5.4 de la guía). Ningún rechazo "
+            "bloquea el análisis: se muestran como advertencias informativas, "
+            "nunca como error."
+        )
+        if len(returns) < MIN_DIAGNOSTICS_N:
+            st.info(
+                f"Muestra insuficiente para diagnósticos confiables "
+                f"(hay {len(returns)} rendimientos, se recomiendan al menos "
+                f"{MIN_DIAGNOSTICS_N}). No se muestran los contrastes."
+            )
+        else:
+            for diag in run_diagnostics(returns):
+                icon = "⚠️" if diag.reject else "✅"
+                with st.expander(f"{icon} {diag.name}", expanded=diag.reject):
+                    st.write(f"**Hipótesis nula:** {diag.hypothesis}")
+                    st.write(f"**Parámetros:** {diag.parameters}")
+                    col_a, col_b = st.columns(2)
+                    col_a.metric("Estadístico", f"{diag.statistic:.4f}")
+                    col_b.metric("p-valor", f"{diag.p_value:.4f}")
+                    if diag.reject:
+                        st.warning(diag.interpretation)
+                    else:
+                        st.success(diag.interpretation)
+
 
 def main() -> None:
     render_header()
@@ -182,7 +232,7 @@ def main() -> None:
             )
             st.stop()
 
-        user = require_login()
+        user = require_login()  # detiene la ejecución si no hay sesión activa
         user_name, user_email = getattr(user, "name", "?"), getattr(user, "email", "?")
 
     render_disclaimer_gate()
