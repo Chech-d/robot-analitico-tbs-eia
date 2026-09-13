@@ -1,0 +1,20 @@
+# Entorno y caché de Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secretos: NUNCA subir esto a git
+.streamlit/secrets.toml
+.env
+
+# Datos y bases de datos locales
+data/cache/
+*.sqlite3
+*.db
+
+# Sistema operativo / editor
+.DS_Store
+.vscode/
