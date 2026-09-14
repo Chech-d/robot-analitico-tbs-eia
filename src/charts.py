@@ -2,10 +2,9 @@
 Visualizaciones (RF-09, RF-14) y mapa histórico rendimiento-riesgo
 (RF-19 a RF-21).
 
-El mapa histórico obligatorio (RF-19/RF-20, sección 5.8) se construye en la
-Fase 8 del roadmap. Este archivo cubre los gráficos de precio y rendimiento
-del análisis de un solo activo (Fase 4) y la trayectoria de pronóstico
-(Fase 6).
+Este archivo cubre los gráficos de precio y rendimiento del análisis de un
+solo activo (Fase 4), la trayectoria de pronóstico (Fase 6) y el mapa
+histórico rendimiento-riesgo de la comparación de N activos (Fase 8).
 """
 import pandas as pd
 import plotly.graph_objects as go
@@ -74,6 +73,51 @@ def forecast_chart(prices, steps, ticker: str, frequency: str, history_window: i
         title=f"Pronóstico - {ticker} ({frequency})",
         xaxis_title="Fecha",
         yaxis_title="Precio",
+        margin=dict(t=60, b=40, l=40, r=20),
+    )
+    return fig
+
+
+def risk_return_map(summaries, non_dominated) -> go.Figure:
+    """
+    Mapa histórico rendimiento-riesgo (RF-19/RF-20, sección 5.8): volatilidad
+    anualizada en X, media histórica logarítmica anualizada en Y. Las
+    coordenadas son históricas (no dependen de H) y se etiqueta cada punto.
+    Los activos no dominados se resaltan; esto NO es una frontera eficiente
+    de portafolios ni una recomendación de la mejor inversión universal.
+    """
+    dominated = [s for s in summaries if s.ticker not in non_dominated]
+    frontier = [s for s in summaries if s.ticker in non_dominated]
+
+    fig = go.Figure()
+    if dominated:
+        fig.add_trace(
+            go.Scatter(
+                x=[s.vol_annual for s in dominated],
+                y=[s.mean_annual for s in dominated],
+                mode="markers+text",
+                text=[s.ticker for s in dominated],
+                textposition="top center",
+                name="Dominado",
+                marker=dict(size=10, color="rgba(99, 110, 250, 0.6)"),
+            )
+        )
+    if frontier:
+        fig.add_trace(
+            go.Scatter(
+                x=[s.vol_annual for s in frontier],
+                y=[s.mean_annual for s in frontier],
+                mode="markers+text",
+                text=[s.ticker for s in frontier],
+                textposition="top center",
+                name="No dominado",
+                marker=dict(size=13, color="rgba(239, 85, 59, 0.9)", symbol="diamond"),
+            )
+        )
+    fig.update_layout(
+        title="Mapa histórico rendimiento-riesgo (no es frontera eficiente de portafolios)",
+        xaxis_title="Volatilidad histórica anualizada (σ)",
+        yaxis_title="Media histórica logarítmica anualizada (ḡ)",
         margin=dict(t=60, b=40, l=40, r=20),
     )
     return fig

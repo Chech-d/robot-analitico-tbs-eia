@@ -5,6 +5,8 @@ Portafolios, Tech Business School - Universidad EIA.
 
 EDITEN los valores de identidad de más abajo antes de la primera entrega.
 """
+import json
+
 import pandas as pd
 import streamlit as st
 
@@ -19,8 +21,20 @@ from src.analytics import (
     run_diagnostics,
 )
 from src.auth import is_auth_configured, require_login
-from src.charts import forecast_chart, price_chart, return_chart
-from src.data import FREQUENCY_RULES, fetch_asset_data, resample_prices
+from src.charts import forecast_chart, price_chart, return_chart, risk_return_map
+from src.comparison import (
+    MIN_COMPARISON_ASSETS,
+    build_comparison,
+    comparison_table,
+    export_parameters,
+    non_dominated_tickers,
+    preselect_max_mean_under_risk_limit,
+    preselect_max_rvr,
+    preselect_min_vol_under_min_mean,
+    preselect_non_dominated,
+    processed_prices_export,
+)
+from src.data import FREQUENCY_RULES, fetch_asset_data, fetch_many, resample_prices
 from src.forecasting import (
     FORECAST_MODELS,
     MIN_WALKFORWARD_TRAIN,
@@ -236,8 +250,8 @@ def render_historical_analysis() -> None:
 
 def render_forecast() -> None:
     """
-    Pronóstico homocedástico multihorizonte, validación walk-forward y
-    riesgo (RF-13 a RF-18, secciones 5.5 a 5.7 y 8.1 de la guía).
+    Pronóstico homocedástico multihorizonte y validación walk-forward
+    (RF-13 a RF-15, secciones 5.5 y 8.1 de la guía).
     """
     result = st.session_state.get("asset_result")
     frequency = st.session_state.get("asset_frequency")
@@ -454,6 +468,181 @@ def render_forecast() -> None:
             )
 
 
+def render_comparison() -> None:
+    """
+    Comparación de N activos, mapa histórico rendimiento-riesgo, dominancia,
+    preselección transparente y exportación (RF-19 a RF-22, sección 5.8).
+
+    Vista independiente del análisis de un solo activo de arriba. No calcula
+    pesos, covarianzas, correlaciones conjuntas ni frontera eficiente: es una
+    preselección de activos individuales.
+    """
+    st.divider()
+    st.subheader("Comparación de activos (RF-19 a RF-22)")
+    st.caption(
+        "Vista independiente del análisis de un solo activo. Acepta un mínimo "
+        f"simultáneo de {MIN_COMPARISON_ASSETS} activos válidos. No calcula pesos, "
+        "covarianzas, correlaciones conjuntas ni frontera eficiente: es una preselección "
+        "de activos individuales, no asset allocation."
+    )
+
+    default_tickers = (
+        "AAPL, MSFT, AMZN, GOOGL, META, NVDA, JPM, JNJ, XOM, PG, "
+        "KO, PEP, WMT, HD, COST, UNH, V, MA, CAT, MCD"
+    )
+    tickers_text = st.text_area(
+        "Tickers a comparar (sepáralos por coma o por línea; agrega o borra los que quieras)",
+        value=default_tickers,
+        key="comparison_tickers_text",
+        height=80,
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        start_date = st.date_input("Fecha inicial", value=pd.Timestamp("2023-01-01"), key="comparison_start")
+    with col2:
+        end_date = st.date_input("Fecha final", value=pd.Timestamp.today(), key="comparison_end")
+    with col3:
+        frequency = st.selectbox("Frecuencia", list(FREQUENCY_RULES.keys()), key="comparison_frequency")
+
+    if st.button("Comparar activos"):
+        raw_tickers = [
+            t.strip().upper() for chunk in tickers_text.split(",") for t in chunk.split("\n")
+        ]
+        tickers, seen = [], set()
+        for t in raw_tickers:
+            if t and t not in seen:
+                tickers.append(t)
+                seen.add(t)
+
+        if len(tickers) < 2:
+            st.error("Escribe al menos 2 tickers para comparar.")
+        else:
+            with st.spinner(f"Descargando y comparando {len(tickers)} activos..."):
+                assets = fetch_many(tickers, start_date, end_date, frequency)
+                periods_per_year = FREQUENCY_PERIODS_PER_YEAR.get(frequency, 252)
+                result = build_comparison(assets, frequency, periods_per_year)
+            st.session_state["comparison_result"] = result
+
+    result = st.session_state.get("comparison_result")
+    if result is None:
+        return
+
+    if not result.ok:
+        st.error(f"No se pudo construir la comparación: {result.reason}")
+        if result.excluded:
+            with st.expander(f"Activos excluidos ({len(result.excluded)})"):
+                for e in result.excluded:
+                    st.write(f"- **{e.ticker}**: {e.reason}")
+        return
+
+    n_valid = len(result.summaries)
+    if n_valid < MIN_COMPARISON_ASSETS:
+        st.warning(
+            f"Hay {n_valid} activo(s) válido(s) en esta comparación; la guía exige que la "
+            f"vista acepte al menos {MIN_COMPARISON_ASSETS} simultáneamente. Agrega más "
+            "tickers válidos para cumplir ese mínimo."
+        )
+    else:
+        st.success(f"{n_valid} activos válidos comparados (mínimo exigido: {MIN_COMPARISON_ASSETS}).")
+
+    st.caption(
+        f"Moneda base: {result.base_currency} · Frecuencia: {result.frequency} · "
+        f"Ventana común: {result.common_start.date()} a {result.common_end.date()} "
+        f"({result.n_common} observaciones de precio). Las coordenadas del mapa son "
+        "históricas y NO cambian con el horizonte H del pronóstico."
+    )
+
+    if result.excluded:
+        with st.expander(f"Activos excluidos de esta comparación ({len(result.excluded)})"):
+            for e in result.excluded:
+                st.write(f"- **{e.ticker}**: {e.reason}")
+
+    non_dominated = non_dominated_tickers(result.summaries)
+    table = comparison_table(result, non_dominated)
+
+    tab_table, tab_map, tab_select, tab_export = st.tabs(
+        ["Tabla comparativa", "Mapa histórico", "Preselección", "Exportar"]
+    )
+
+    with tab_table:
+        st.dataframe(table)
+
+    with tab_map:
+        st.plotly_chart(risk_return_map(result.summaries, non_dominated), use_container_width=True)
+        st.caption(
+            "Rombos rojos = activos NO dominados (ningún otro activo del lote ofrece a la "
+            "vez media igual o mayor y volatilidad igual o menor). Esto no es una frontera "
+            "eficiente de portafolios ni una recomendación de la mejor inversión universal."
+        )
+
+    with tab_select:
+        st.write(
+            "Regla de preselección transparente (RF-21). El resultado se expresa como "
+            "'mejor según este criterio y estos parámetros', nunca como la mejor inversión "
+            "en términos absolutos."
+        )
+        criterion = st.selectbox(
+            "Criterio",
+            [
+                "Máxima media histórica bajo límite de riesgo",
+                "Mínima volatilidad bajo media mínima",
+                "Máxima razón individual media-volatilidad (RVR)",
+                "Conjunto no dominado (media-volatilidad)",
+            ],
+            key="comparison_criterion",
+        )
+
+        if criterion == "Máxima media histórica bajo límite de riesgo":
+            risk_limit = st.number_input(
+                "Límite de riesgo (volatilidad anualizada máxima aceptable)",
+                min_value=0.0, value=0.30, step=0.01, format="%.4f", key="comparison_risk_limit",
+            )
+            selected = preselect_max_mean_under_risk_limit(result.summaries, risk_limit)
+        elif criterion == "Mínima volatilidad bajo media mínima":
+            min_mean = st.number_input(
+                "Media histórica anualizada mínima aceptable",
+                value=0.0, step=0.01, format="%.4f", key="comparison_min_mean",
+            )
+            selected = preselect_min_vol_under_min_mean(result.summaries, min_mean)
+        elif criterion == "Máxima razón individual media-volatilidad (RVR)":
+            selected = preselect_max_rvr(result.summaries)
+        else:
+            selected = preselect_non_dominated(result.summaries)
+
+        if selected:
+            tie_note = " (empate)" if len(selected) > 1 else ""
+            st.success(f"Mejor según este criterio: {', '.join(selected)}{tie_note}")
+        else:
+            st.warning("Ningún activo cumple este criterio con los parámetros elegidos.")
+
+    with tab_export:
+        st.write("Descarga los datos procesados de esta comparación (RF-22).")
+        params = export_parameters(result)
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            st.download_button(
+                "Precios procesados (CSV)",
+                data=processed_prices_export(result).to_csv(index=False),
+                file_name="precios_procesados.csv",
+                mime="text/csv",
+            )
+        with col_e2:
+            st.download_button(
+                "Tabla comparativa (CSV)",
+                data=table.reset_index().to_csv(index=False),
+                file_name="tabla_comparativa.csv",
+                mime="text/csv",
+            )
+        with col_e3:
+            st.download_button(
+                "Parámetros (JSON)",
+                data=json.dumps(params, indent=2, ensure_ascii=False),
+                file_name="parametros_comparacion.json",
+                mime="application/json",
+            )
+
+
 def main() -> None:
     render_header()
 
@@ -519,11 +708,7 @@ def main() -> None:
 
     render_historical_analysis()
     render_forecast()
-
-    st.write(
-        "Aquí seguirá el resto de la aplicación: comparación de activos "
-        "(ver roadmap)."
-    )
+    render_comparison()
 
     if not DEV_MODE and st.button("Cerrar sesión"):
         st.logout()
