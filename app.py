@@ -30,6 +30,17 @@ from src.forecasting import (
     terminal_distribution,
     walk_forward_validate,
 )
+from src.risk_rules import (
+    DEFAULT_BR_MIN,
+    DEFAULT_CB,
+    DEFAULT_CS,
+    DEFAULT_PL,
+    DEFAULT_PU,
+    RiskParameters,
+    compute_var,
+    evaluate_signal,
+    terminal_probabilities,
+)
 
 # ---------------------------------------------------------------------------
 # MODO DESARROLLO: mientras no tengan credenciales OIDC reales, dejen esto en
@@ -225,8 +236,8 @@ def render_historical_analysis() -> None:
 
 def render_forecast() -> None:
     """
-    Pronóstico homocedástico multihorizonte y validación walk-forward
-    (RF-13 a RF-15, secciones 5.5 y 8.1 de la guía).
+    Pronóstico homocedástico multihorizonte, validación walk-forward y
+    riesgo (RF-13 a RF-18, secciones 5.5 a 5.7 y 8.1 de la guía).
     """
     result = st.session_state.get("asset_result")
     frequency = st.session_state.get("asset_frequency")
@@ -295,8 +306,8 @@ def render_forecast() -> None:
             "todos los cuantiles coinciden con la mediana."
         )
 
-    tab_traj, tab_terminal, tab_wf = st.tabs(
-        ["Trayectoria 1..H", "Distribución terminal", "Validación walk-forward"]
+    tab_traj, tab_terminal, tab_wf, tab_risk = st.tabs(
+        ["Trayectoria 1..H", "Distribución terminal", "Validación walk-forward", "Riesgo y niveles"]
     )
 
     with tab_traj:
@@ -361,6 +372,85 @@ def render_forecast() -> None:
                         ],
                     }
                 ).set_index("origen (índice)")
+            )
+
+    with tab_risk:
+        st.caption(
+            "VaR, probabilidades, entrada, stop-loss y take-profit comparten el mismo "
+            f"modelo ({dist.model_name}) y el mismo horizonte (H={horizon}) que las "
+            "pestañas anteriores (RF-16 a RF-18, secciones 5.6 y 5.7)."
+        )
+
+        col_cap, col_conf, col_brmin = st.columns(3)
+        with col_cap:
+            capital = st.number_input(
+                "Capital a invertir", min_value=0.0, value=10000.0, step=100.0, key="risk_capital",
+            )
+        with col_conf:
+            confidence_label = st.selectbox(
+                "Nivel de confianza del VaR", ["95%", "99%"], key="risk_confidence",
+            )
+            confidence = 0.95 if confidence_label == "95%" else 0.99
+        with col_brmin:
+            br_min = st.number_input(
+                "BR_min (beneficio/riesgo neto mínimo)", min_value=0.0, value=DEFAULT_BR_MIN,
+                step=0.1, key="risk_br_min",
+            )
+
+        col_cb, col_cs = st.columns(2)
+        with col_cb:
+            c_b = st.number_input(
+                "Costo de compra c_b (fracción, ej. 0.001 = 0.1%)", min_value=0.0, value=DEFAULT_CB,
+                step=0.001, format="%.4f", key="risk_cb",
+            )
+        with col_cs:
+            c_s = st.number_input(
+                "Costo de venta c_s (fracción, ej. 0.001 = 0.1%)", min_value=0.0, max_value=0.999,
+                value=DEFAULT_CS, step=0.001, format="%.4f", key="risk_cs",
+            )
+
+        params = RiskParameters(p_l=DEFAULT_PL, p_u=DEFAULT_PU, br_min=br_min, c_b=c_b, c_s=c_s)
+
+        st.markdown(f"**VaR paramétrico individual ({confidence_label}, RF-16)**")
+        var_result = compute_var(model, p0, horizon, confidence, capital)
+        col_v1, col_v2 = st.columns(2)
+        col_v1.metric(f"VaR fraccional ({confidence_label})", f"{var_result.var_fraction:.4%}")
+        col_v2.metric("VaR en unidades monetarias", f"{var_result.var_dollar:,.2f}")
+
+        st.divider()
+        st.markdown(f"**Entrada, stop-loss y take-profit (p_L={params.p_l:.0%}, p_U={params.p_u:.0%}, RF-17)**")
+        signal = evaluate_signal(model, p0, horizon, params)
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        col_s1.metric("Entrada (E = P0)", f"{signal.entry:.4f}")
+        col_s2.metric("Stop-loss (SL_H)", f"{signal.sl_h:.4f}")
+        col_s3.metric("Take-profit (TP_H)", f"{signal.tp_h:.4f}")
+        col_s4.metric("Precio de equilibrio (P_BE)", f"{signal.p_be:.4f}")
+
+        col_n1, col_n2, col_n3 = st.columns(3)
+        col_n1.metric("Riesgo neto (D_neto)", f"{signal.d_neto:.4f}" if signal.d_neto is not None else "N/D")
+        col_n2.metric("Beneficio neto (U_neto)", f"{signal.u_neto:.4f}" if signal.u_neto is not None else "N/D")
+        col_n3.metric("BR_neto", f"{signal.br_neto:.4f}" if signal.br_neto is not None else "N/D")
+        if signal.br_bruta is not None:
+            st.caption(f"BR_bruta (sin costos, referencia): {signal.br_bruta:.4f}")
+
+        if signal.ok:
+            st.success("Señal sustentada: se cumplen todas las condiciones de la sección 5.7.")
+        else:
+            st.warning("No señal (nunca se fuerza una señal). Motivos:")
+            for reason in signal.reasons:
+                st.write(f"- {reason}")
+
+        st.divider()
+        st.markdown("**Probabilidades terminales frente a P_BE (RF-18)**")
+        term_probs = terminal_probabilities(model, p0, horizon, signal.p_be)
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("Pr(ganar)", f"{term_probs.prob_win:.2%}")
+        col_p2.metric("Pr(perder)", f"{term_probs.prob_lose:.2%}")
+        col_p3.metric("Pr(neutral)", f"{term_probs.prob_neutral:.2%}" if term_probs.is_deterministic else "N/A")
+        if term_probs.is_deterministic:
+            st.info(
+                "Rama determinista (v_H=0): la probabilidad se concentra por completo "
+                "en un único desenlace (ganar, perder o neutral)."
             )
 
 
@@ -431,8 +521,8 @@ def main() -> None:
     render_forecast()
 
     st.write(
-        "Aquí seguirá el resto de la aplicación: riesgo y comparación de "
-        "activos (ver roadmap)."
+        "Aquí seguirá el resto de la aplicación: comparación de activos "
+        "(ver roadmap)."
     )
 
     if not DEV_MODE and st.button("Cerrar sesión"):
