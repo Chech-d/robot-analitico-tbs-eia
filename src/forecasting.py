@@ -210,9 +210,36 @@ def periods_until(last_date, target_date, frequency: str) -> int:
 # ---------------------------------------------------------------------------
 
 WALKFORWARD_ORIGINS = 10
-# Mínimo de observaciones de entrenamiento en el primer origen. Por debajo de
-# esto, media y sigma muestrales no son confiables (igual que en Fase 5).
-MIN_WALKFORWARD_TRAIN = 30
+# Constante aditiva de la regla de suficiencia de la sección 5.5 (9 periodos
+# de margen adicionales a los 10 orígenes menos uno).
+WALKFORWARD_MARGIN = 9
+
+
+def walkforward_min_train(periods_per_year: int, horizon: int) -> int:
+    """n_min = max(2m, 5H) (sección 5.5): mínimo de entrenamiento en el primer origen."""
+    return max(2 * periods_per_year, 5 * horizon)
+
+
+def is_walkforward_sufficient(n_returns: int, periods_per_year: int, horizon: int) -> bool:
+    """T >= max(2m,5H) + H + 9 (sección 5.5, RF-04/RF-15): regla de suficiencia temporal."""
+    if horizon < 1:
+        return False
+    n_min = walkforward_min_train(periods_per_year, horizon)
+    return n_returns >= n_min + horizon + WALKFORWARD_MARGIN
+
+
+def max_valid_horizon(n_returns: int, periods_per_year: int) -> int:
+    """
+    Mayor horizonte H (entero >= 1) que todavía cumple la regla de suficiencia
+    T >= max(2m,5H) + H + 9 de la sección 5.5 (RF-04: "el límite operacional
+    deberá justificarse por los datos"). Devuelve 0 si ningún H >= 1 cumple.
+    """
+    h_max = 0
+    horizon = 1
+    while horizon <= n_returns and is_walkforward_sufficient(n_returns, periods_per_year, horizon):
+        h_max = horizon
+        horizon += 1
+    return h_max
 
 
 @dataclass
@@ -249,13 +276,15 @@ def walk_forward_validate(
     fit_fn: Callable[[pd.Series], ForecastModel],
     model_name: str,
     horizon: int,
+    periods_per_year: int,
 ) -> WalkForwardResult:
     """
     Valida un modelo con los últimos WALKFORWARD_ORIGINS orígenes consecutivos,
     ventana expansiva y reestimación solo con datos disponibles en cada origen
-    (sin look-ahead). Si la muestra no alcanza, devuelve ok=False (RF-15:
-    "con muestra insuficiente se declarará validación insuficiente y no
-    señal"), sin lanzar excepción.
+    (sin look-ahead). Suficiencia exacta de la sección 5.5: n_min=max(2m,5H),
+    T>=n_min+H+9. Si la muestra no alcanza, devuelve ok=False (RF-15: "con
+    muestra insuficiente se declarará validación insuficiente y no señal"),
+    sin lanzar excepción.
     """
     n = len(returns)
     values = returns.values
@@ -266,22 +295,22 @@ def walk_forward_validate(
             reason="Horizonte inválido (H debe ser un entero positivo).",
         )
 
-    last_origin = n - horizon  # deja exactamente H rendimientos para evaluar
-    first_origin = last_origin - (WALKFORWARD_ORIGINS - 1)
+    n_min = walkforward_min_train(periods_per_year, horizon)
 
-    if last_origin < MIN_WALKFORWARD_TRAIN or first_origin < MIN_WALKFORWARD_TRAIN:
+    if not is_walkforward_sufficient(n, periods_per_year, horizon):
         return WalkForwardResult(
             ok=False,
             model_name=model_name,
             horizon=horizon,
             reason=(
-                f"Validación insuficiente: se necesitan al menos "
-                f"{MIN_WALKFORWARD_TRAIN} rendimientos de entrenamiento antes "
-                f"del primer origen y {WALKFORWARD_ORIGINS} orígenes con "
-                f"{horizon} rendimientos posteriores cada uno; la muestra "
-                f"disponible (n={n}) no alcanza para H={horizon}."
+                f"Validación insuficiente (sección 5.5): se requiere "
+                f"T >= max(2m,5H)+H+9 = {n_min}+{horizon}+9 = {n_min + horizon + WALKFORWARD_MARGIN} "
+                f"rendimientos y la muestra disponible tiene T={n} para H={horizon}."
             ),
         )
+
+    last_origin = n - horizon  # deja exactamente H rendimientos para evaluar
+    first_origin = last_origin - (WALKFORWARD_ORIGINS - 1)
 
     origins_result: "list[WalkForwardOrigin]" = []
     for origin in range(first_origin, last_origin + 1):

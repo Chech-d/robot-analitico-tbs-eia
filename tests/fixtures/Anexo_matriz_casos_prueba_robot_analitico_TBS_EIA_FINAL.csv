@@ -1,0 +1,59 @@
+case_id,linked_test_ids,linked_requirements,category,input,expected_result,tolerance_or_rule,notes
+LOG-01,T-01,RF-07|RF-10|RF-11,synthetic_prices,prices=100|110|99,log_returns=0.095310179804325|-0.105360515657826,atol=1e-8;rtol=1e-10,0.10|-0.10 reveals prohibited simple returns
+STAT-01,T-01|T-07,RF-10|RF-11,synthetic_log_returns,g=-0.02|-0.01|0|0.01|0.02;m=252,mean=0;sample_variance=0.000250000000000;sample_sd=0.015811388300842;annual_sd=0.250998007960223,atol=1e-8;rtol=1e-10,Sample variance; descriptive iid annualization
+FREQ-01,T-07,RF-06|RF-11,annualization_factors,g=-0.02|-0.01|0|0.01|0.02;m=52 then m=12,annual_sd_52=0.114017542509914;annual_sd_12=0.054772255750517;annual_mean_both=0,atol=1e-8;rtol=1e-10,Weekly and monthly root-time conventions
+RESAMPLE-01,T-07,RF-06|RF-07|RF-11,resample_before_returns,fixture=AAPL;W-FRI and month-end;resample_prices_then_log_returns,weekly_prices=109;weekly_returns=108;weekly_annual_mean=0.024364449534971;weekly_annual_sd=0.137253313867469;monthly_prices=26;monthly_returns=25;monthly_annual_mean=0.005722470978255;monthly_annual_sd=0.098672726885537,atol=1e-8;rtol=1e-10,Never aggregate precomputed daily returns
+CONST-01,T-02|T-13|T-14|T-15,RF-13|RF-16|RF-17|RF-18,constant_prices,P=100 repeated;model=A;H=4;pL=.05;pU=.95;cb=0;cs=0,mu=0;sigma=0;VaR=0;all_quantiles=100;neutral_probability=1;decision=no_signal,exact,No division by zero; SL=E=TP
+MODEL-A-01,T-09|T-13|T-15,RF-13|RF-14|RF-16|RF-18,random_walk_no_drift,P=100;sigma=0.0158113883008419;H=4;C=10000,m_H=0;v_H=0.001;sd_H=0.031622776601684;median=100;mean=100.050012502084;q05=94.931478005803;q95=105.339137344820;VaR95_frac=0.050685219941970;VaR95_money=506.852199419704;prob_above_100=0.5,atol=1e-8;rtol=1e-10,Analytical benchmark
+MODEL-B-01,T-09|T-13|T-15,RF-13|RF-14|RF-16|RF-18,lognormal_with_drift,P=100;mu=0.01;sigma=0.02;H=3;C=10000,m_H=0.03;v_H=0.0012;sd_H=0.034641016151378;median=103.045453395352;mean=103.107299219281;q05=97.338129194272;q95=109.087420863215;VaR95_frac=0.026618708057277;VaR95_money=266.187080572772;prob_above_100=0.806761884614384,atol=1e-8;rtol=1e-10,Analytical model
+VAR99-A-01,T-15,RF-16,var_99,MODEL-A-01;c=.99;C=10000,VaR99_frac=0.070924784140090;VaR99_money=709.247841400895,atol=1e-8;rtol=1e-10,Analytical 99 percent VaR
+VAR99-B-01,T-15,RF-16,var_99,MODEL-B-01;c=.99;C=10000,VaR99_frac=0.049328834922328;VaR99_money=493.288349223279,atol=1e-8;rtol=1e-10,Analytical 99 percent VaR
+PATH-B-01,T-08,RF-14,analytical_path,P=100;mu=.01;sigma=.02;H=3,"h1:median=101.005016708417,mean=101.025219731994,q05=97.736307609620,q95=104.383045050327|h2:median=102.020134002676,mean=102.060950218976,q05=97.382517216574,q95=106.878606544712|h3:median=103.045453395352,mean=103.107299219281,q05=97.338129194272,q95=109.087420863215",atol=1e-8;rtol=1e-10,One through H analytical trajectory
+HORIZON-01,T-08|T-10,RF-04|RF-14,horizon_validation,T=539;m=252;H=1|5|17;target_date=2026-09-07->H=17;invalid=0|-1|1.5|H=27,valid_H_computes;date_conversion_H17;invalid_H_blocked_with_actionable_error,exact,"H=27 violates T>=max(2m,5H)+H+9"
+COST-B-01,T-13|T-14,RF-17|RF-18,costs_and_levels,MODEL-B-01;cb=.001;cs=.001;pL=.05;pU=.95,P_BE=100.200200200200;U_net=8.878333442352;D_net=2.859208934922;BR_net=3.105171270946;prob_win=0.790538273989;prob_loss=0.209461726011,atol=1e-8;rtol=1e-10,Costs frozen before calculation
+MAP-20-01,T-05|T-16|T-17,RF-03|RF-19|RF-20|RF-21,offline_fixture,fixture=Fixture_20_activos_sintetico_TBS_EIA.csv;sha256=e55dc91e7a24b8432840f2bfe815d718b48ccacddc2faff550ae17020fbdc2d5,20_valid_results;common_dates;USD;historical_coordinates_equal_expected_file,exact identifiers;numeric atol=1e-8;rtol=1e-10,Synthetic deterministic data; not market data
+FAIL-20P1-01,T-06,RF-03|RF-08|RF-19,partial_failure,20_fixture_tickers|EIA_INVALID_2026,20_valid_results_retained;one_isolated_error,exact,Invalid ticker must not delete valid results
+MAP-H-01,T-16,RF-19|RF-20,historical_map,same_fixture;H=1 then H=20,coordinates_unchanged,exact,Only predictive outputs depend on H
+WF-01,T-11,RF-15,walk_forward,fixture=AAPL;T=539;m=252;H=20;n_min=504;origins=510|511|512|513|514|515|516|517|518|519,A_MAE=0.047838991594412;A_RMSE=0.049889389325085;A_coverage=0.200000000000;A_direction=NA;B_MAE=0.050673668010446;B_RMSE=0.052630163459918;B_coverage=0.100000000000;B_direction=0.000000000000;B_direction_n=10,exact origins;atol=1e-8;rtol=1e-10,Last ten expanding origins; overlapping H targets disclosed
+DIAG-01,T-12,RF-11|RF-15,diagnostic_policy,p_JB=.01;p_LB=.20;p_BF=.03;p_ARCH=.40;alpha=.05,warning_flags=JB|Brown-Forsythe;no_signal=false;forecast_label=conditional,exact,Diagnostic rejection warns but does not suppress automatically
+CONSENT-01,T-18,RF-01|RF-02,preconsent,privacy=false or disclaimer=false,OIDC_not_started;zero_persistent_rows,exact,Controls separate and not prechecked
+CONSENT-02,T-18,RF-02,preconsent_replay,flow_missing|expired|consumed;cookie=Signed|Secure|HttpOnly|SameSiteLax,logout;analysis_blocked;zero_persistent_rows;cookie_destroyed;no_query_string_or_PII,exact,Opaque flow; TTL 15 minutes; one use
+PROVIDER-01,T-03,RF-05|RF-08,provider_mock,valid|empty|timeout|nonpositive|ticker_missing,valid_response_parsed;all_failures_isolated_and_actionable,exact,No internet dependency; price and provenance validated
+ONE-ASSET-01,T-04,RF-03|RF-09|RF-22,single_asset_flow,fixture=AAPL;valid_date_range;daily,analysis_forecast_risk_and_export_complete,exact,Same pipeline as the 20-asset comparison
+AUTH-01,T-18,RF-02,access_control,anonymous_direct_route,analysis_blocked_server_side,exact,All calculations and downloads protected
+AUTH-02,T-19,RF-02,oidc_google,course_test_account,login_and_logout_success;stable_user_id,exact,Allowlist; no real PII
+AUTH-03,T-20,RF-02,oidc_microsoft,course_test_account_and_tenant,login_and_logout_success;stable_user_id,exact,Allowlist; no real PII
+AUTH-04,T-19|T-20,RF-02,identity_validation,not_allowlisted|missing_name|missing_email,identity_incomplete_or_forbidden;no_session,exact,preferred_username is not automatically verified email
+SESSION-01,T-21,RF-02,session_idempotency,10_reruns;2_tabs;concurrent_requests,one_active_session;one_session_started,exact,Partial unique active session or transaction lock
+SESSION-02,T-21,RF-02,idle_expiry,accelerated_30_min_inactivity,status=expired;next_request_blocked,exact,Logical server session
+SESSION-03,T-21,RF-02,absolute_expiry,accelerated_8_hours,status=expired;next_request_blocked,exact,Independent of framework identity cookie
+TX-01,T-22,RF-02,transaction,failure_between_auth_event_and_outbox,transaction_rollback;profiles_consents_sessions_events_outbox_unchanged,exact,Zero new rows or mutations; prior profile state remains identical
+NOTIFY-01,T-22,RF-02,idempotency,one_session;10_reload_events,one_outbox;one_sink_delivery,exact,"UNIQUE(session_id,type); sink key event_id"
+NOTIFY-02,T-22,RF-02,retry,timeout|500|202 then timeout|500|500,sent_attempt_3 then failed_attempt_3,exact,"Three attempts total, not three retries"
+NOTIFY-03,T-22,RF-02,restart_concurrency,pending_restart;2_workers;10_reloads,pending_survives;one_delivery,exact,Worker independent of web reruns
+PRIV-01,T-23,RNF-03,least_privilege,roles=user|web|worker|lifecycle,only_authorized_operations,exact,Ordinary users cannot read audit
+PRIV-02,T-23,RNF-03,purge,accelerated_purge_at,active_stores_purged;deletion_marker_active;backup_expiry_le_30d,exact,Aggregates only after the last backup expires
+PRIV-03,T-23,RNF-03,revocation_restore,revocation;restore_backup,access_revoked;deletion_marker_reapplies_purge,exact,Marker expires with last backup
+SEC-01,T-24,RNF-03,secrets_and_logs,repo_history|logs|screenshots|redirect_uris,no_secrets_or_PII;callbacks_match;secrets_in_manager,exact,High exploitable finding blocks delivery
+OPS-01,T-25,RNF-02,healthcheck,web|db|scheduler|notifications_worker|lifecycle_worker,healthy_or_admin_degraded_status;both_last_cycles_visible,exact,Never claim lifecycle or notification operation if a worker is down
+ASSET-01,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,AAPL,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-02,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,MSFT,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-03,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,AMZN,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-04,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,GOOGL,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-05,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,META,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-06,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,NVDA,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-07,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,JPM,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-08,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,JNJ,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-09,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,XOM,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-10,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,PG,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-11,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,KO,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-12,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,PEP,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-13,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,WMT,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-14,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,HD,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-15,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,COST,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-16,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,UNH,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-17,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,V,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-18,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,MA,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-19,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,CAT,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-20,T-05|T-06|T-16|T-17,RF-03|RF-19|RF-20|RF-21,fixture_asset,MCD,valid_in_fixture_and_expected_results,exact ticker and dates;numeric tolerance,Common synthetic dates and USD
+ASSET-X,T-06,RF-08,invalid_ticker,EIA_INVALID_2026,isolated_error;20_valid_results_retained,exact,Provider mock or validation branch

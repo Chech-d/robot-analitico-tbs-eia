@@ -37,9 +37,9 @@ from src.comparison import (
 from src.data import FREQUENCY_RULES, fetch_asset_data, fetch_many, resample_prices
 from src.forecasting import (
     FORECAST_MODELS,
-    MIN_WALKFORWARD_TRAIN,
     WALKFORWARD_ORIGINS,
     forecast_path,
+    max_valid_horizon,
     periods_until,
     terminal_distribution,
     walk_forward_validate,
@@ -265,6 +265,15 @@ def render_forecast() -> None:
 
     p0 = float(prices.iloc[-1])
     last_date = prices.index[-1]
+    periods_per_year = FREQUENCY_PERIODS_PER_YEAR[frequency]
+    h_max = max_valid_horizon(len(returns), periods_per_year)
+    if h_max < 1:
+        st.warning(
+            "La muestra disponible no alcanza para validar ningún horizonte H con la "
+            "regla de suficiencia de la sección 5.5 (T >= max(2m,5H)+H+9). "
+            "Elijan un rango de fechas más amplio."
+        )
+        return
 
     st.divider()
     st.subheader(f"Pronóstico de {result.ticker} (RF-13 a RF-15)")
@@ -285,9 +294,14 @@ def render_forecast() -> None:
         )
 
     if h_mode == "Cantidad de periodos":
+        st.caption(
+            f"H máximo admitido con los datos actuales: {h_max} periodo(s) "
+            "(límite justificado por la regla de suficiencia walk-forward de la "
+            "sección 5.5: T >= max(2m,5H)+H+9 — RF-04)."
+        )
         horizon = st.number_input(
-            f"H (en periodos de frecuencia '{frequency}')", min_value=1, max_value=len(returns) * 2,
-            value=min(10, max(1, len(returns) // 2)), step=1, key="forecast_h_periods",
+            f"H (en periodos de frecuencia '{frequency}')", min_value=1, max_value=h_max,
+            value=min(10, h_max), step=1, key="forecast_h_periods",
         )
     else:
         target_date = st.date_input(
@@ -296,6 +310,13 @@ def render_forecast() -> None:
         horizon = periods_until(last_date, target_date, frequency)
         if horizon <= 0:
             st.warning("La fecha objetivo debe ser posterior a la última fecha con dato.")
+            return
+        if horizon > h_max:
+            st.warning(
+                f"La fecha objetivo implica H={horizon}, que supera el límite H_max={h_max} "
+                "admitido por la regla de suficiencia walk-forward de la sección 5.5 "
+                "(T >= max(2m,5H)+H+9). Elijan una fecha objetivo más cercana."
+            )
             return
         st.caption(
             f"H convertido a {horizon} periodo(s) de frecuencia '{frequency}' entre "
@@ -358,7 +379,7 @@ def render_forecast() -> None:
             "reestimación solo con datos disponibles en cada origen (sin look-ahead). "
             "Objetivo: rendimiento logarítmico acumulado a H."
         )
-        wf = walk_forward_validate(returns, fit_fn, model_label, horizon)
+        wf = walk_forward_validate(returns, fit_fn, model_label, horizon, periods_per_year)
         if not wf.ok:
             st.warning(f"Validación insuficiente (no señal sustentada): {wf.reason}")
         else:
