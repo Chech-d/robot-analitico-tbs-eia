@@ -19,8 +19,17 @@ from src.analytics import (
     run_diagnostics,
 )
 from src.auth import is_auth_configured, require_login
-from src.charts import price_chart, return_chart
+from src.charts import forecast_chart, price_chart, return_chart
 from src.data import FREQUENCY_RULES, fetch_asset_data, resample_prices
+from src.forecasting import (
+    FORECAST_MODELS,
+    MIN_WALKFORWARD_TRAIN,
+    WALKFORWARD_ORIGINS,
+    forecast_path,
+    periods_until,
+    terminal_distribution,
+    walk_forward_validate,
+)
 
 # ---------------------------------------------------------------------------
 # MODO DESARROLLO: mientras no tengan credenciales OIDC reales, dejen esto en
@@ -214,6 +223,147 @@ def render_historical_analysis() -> None:
                         st.success(diag.interpretation)
 
 
+def render_forecast() -> None:
+    """
+    Pronóstico homocedástico multihorizonte y validación walk-forward
+    (RF-13 a RF-15, secciones 5.5 y 8.1 de la guía).
+    """
+    result = st.session_state.get("asset_result")
+    frequency = st.session_state.get("asset_frequency")
+    if result is None or not result.ok:
+        return
+
+    prices = result.prices["adjusted_close"]
+    returns = log_returns(prices)
+    if len(returns) < 2:
+        return
+
+    p0 = float(prices.iloc[-1])
+    last_date = prices.index[-1]
+
+    st.divider()
+    st.subheader(f"Pronóstico de {result.ticker} (RF-13 a RF-15)")
+    st.caption(
+        "Piloto académico: los modelos son homocedásticos por alcance pedagógico. "
+        "Si los diagnósticos de la pestaña anterior muestran volatilidad variable o "
+        "colas gruesas, los resultados siguientes se mantienen homocedásticos de "
+        "todas formas y deben leerse como condicionales a ese supuesto."
+    )
+
+    col_model, col_h_mode = st.columns(2)
+    with col_model:
+        model_label = st.selectbox("Modelo", list(FORECAST_MODELS.keys()), key="forecast_model")
+    with col_h_mode:
+        h_mode = st.radio(
+            "Definir horizonte H como", ["Cantidad de periodos", "Fecha objetivo"],
+            horizontal=True, key="forecast_h_mode",
+        )
+
+    if h_mode == "Cantidad de periodos":
+        horizon = st.number_input(
+            f"H (en periodos de frecuencia '{frequency}')", min_value=1, max_value=len(returns) * 2,
+            value=min(10, max(1, len(returns) // 2)), step=1, key="forecast_h_periods",
+        )
+    else:
+        target_date = st.date_input(
+            "Fecha objetivo", value=last_date + pd.Timedelta(days=14), key="forecast_target_date",
+        )
+        horizon = periods_until(last_date, target_date, frequency)
+        if horizon <= 0:
+            st.warning("La fecha objetivo debe ser posterior a la última fecha con dato.")
+            return
+        st.caption(
+            f"H convertido a {horizon} periodo(s) de frecuencia '{frequency}' entre "
+            f"{last_date.date()} y {target_date}."
+        )
+
+    horizon = int(horizon)
+    fit_fn = FORECAST_MODELS[model_label]
+    model = fit_fn(returns)
+    dist = terminal_distribution(model, p0, horizon)
+    steps = forecast_path(model, p0, horizon)
+
+    st.latex(r"P_H = P_0 \cdot \exp(g_{1} + g_{2} + \dots + g_{H}), \quad g_{1}+\dots+g_{H} \sim \mathcal{N}(m_H,\, v_H)")
+    st.write(
+        f"**Modelo:** {dist.model_name} · **Parámetros (por periodo, de la muestra de entrenamiento):** "
+        f"media = {dist.mean_per_period:.6f}, sigma = {dist.std_per_period:.6f}, "
+        f"n = {model.n_train} · **Supuesto:** homocedástico, sin autocorrelación."
+    )
+    if dist.is_deterministic:
+        st.info(
+            "Varianza predictiva igual a cero (rama determinista, sección 5.4.1): "
+            "todos los cuantiles coinciden con la mediana."
+        )
+
+    tab_traj, tab_terminal, tab_wf = st.tabs(
+        ["Trayectoria 1..H", "Distribución terminal", "Validación walk-forward"]
+    )
+
+    with tab_traj:
+        st.plotly_chart(forecast_chart(prices, steps, result.ticker, frequency), use_container_width=True)
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "paso (k)": [s.step for s in steps],
+                    "m_k": [s.m_k for s in steps],
+                    "v_k": [s.v_k for s in steps],
+                    "mediana": [s.median_price for s in steps],
+                    "media": [s.mean_price for s in steps],
+                    "Q05": [s.q05_price for s in steps],
+                    "Q95": [s.q95_price for s in steps],
+                }
+            ).set_index("paso (k)")
+        )
+
+    with tab_terminal:
+        target_label = (last_date + pd.tseries.offsets.BDay(horizon)).date() if frequency == "Diaria" else None
+        st.write(f"**Horizonte H = {horizon}** periodo(s)" + (f" · fecha objetivo aprox.: {target_label}" if target_label else ""))
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Mediana P_H", f"{dist.median_price:.4f}")
+        col2.metric("Media P_H", f"{dist.mean_price:.4f}")
+        col3.metric("P(P_H > P0)", f"{dist.prob_above_entry:.2%}")
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Q05 P_H", f"{dist.q05_price:.4f}")
+        col5.metric("Q95 P_H", f"{dist.q95_price:.4f}")
+        col6.metric("m_H / v_H", f"{dist.m_h:.6f} / {dist.v_h:.6f}")
+
+    with tab_wf:
+        st.caption(
+            f"Ventana expansiva, últimos {WALKFORWARD_ORIGINS} orígenes consecutivos, "
+            "reestimación solo con datos disponibles en cada origen (sin look-ahead). "
+            "Objetivo: rendimiento logarítmico acumulado a H."
+        )
+        wf = walk_forward_validate(returns, fit_fn, model_label, horizon)
+        if not wf.ok:
+            st.warning(f"Validación insuficiente (no señal sustentada): {wf.reason}")
+        else:
+            col_a, col_b, col_c, col_d = st.columns(4)
+            col_a.metric("RMSE (log-espacio)", f"{wf.rmse:.6f}")
+            col_b.metric("MAE (log-espacio)", f"{wf.mae:.6f}")
+            col_c.metric("Cobertura IC 90%", f"{wf.coverage_90:.0%}")
+            col_d.metric(
+                "Exactitud direccional",
+                f"{wf.directional_accuracy:.0%}" if wf.directional_accuracy is not None else "N/D",
+                help="N/D si el modelo no define una dirección (p.ej. caminata aleatoria, m_H=0).",
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "origen (índice)": [o.origin_index for o in wf.origins],
+                        "n entrenamiento": [o.n_train for o in wf.origins],
+                        "pronóstico (m_H)": [o.forecast_cum_return for o in wf.origins],
+                        "Q05": [o.q05_cum_return for o in wf.origins],
+                        "Q95": [o.q95_cum_return for o in wf.origins],
+                        "real (acumulado)": [o.actual_cum_return for o in wf.origins],
+                        "dentro IC 90%": [o.in_interval_90 for o in wf.origins],
+                        "dirección correcta": [
+                            "N/D" if o.direction_correct is None else o.direction_correct for o in wf.origins
+                        ],
+                    }
+                ).set_index("origen (índice)")
+            )
+
+
 def main() -> None:
     render_header()
 
@@ -278,10 +428,11 @@ def main() -> None:
             st.error(f"{result.ticker}: {result.error}")
 
     render_historical_analysis()
+    render_forecast()
 
     st.write(
-        "Aquí seguirá el resto de la aplicación: forecasting, riesgo y "
-        "comparación de activos (ver roadmap)."
+        "Aquí seguirá el resto de la aplicación: riesgo y comparación de "
+        "activos (ver roadmap)."
     )
 
     if not DEV_MODE and st.button("Cerrar sesión"):
