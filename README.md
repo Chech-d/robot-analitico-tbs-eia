@@ -180,8 +180,9 @@ presenta como "mejor según este criterio y estos parámetros", nunca como
 y nunca fuerza una conclusión operativa — cuando: los datos son inválidos o
 insuficientes; el precio no es positivo; la muestra no alcanza la regla de
 suficiencia walk-forward; hay menos de 10 orígenes válidos; no se cumple
-SL_H < E < TP_H; P_BE < E o P_BE ≥ TP_H; D_neto ≤ 0; U_neto ≤ 0; o BR_neto 
-BR_min. Cada no-señal muestra el motivo (o motivos) exacto que falló.
+`SL_H < E < TP_H`; `P_BE < E` o `P_BE ≥ TP_H`; `D_neto ≤ 0`; `U_neto ≤ 0`; o
+`BR_neto < BR_min`. Cada no-señal muestra el motivo (o motivos) exacto que
+falló.
 
 **Limitaciones.** Los modelos son homocedásticos por alcance pedagógico
 (no incluyen ARCH, GARCH ni EWMA, y el sistema lo advierte explícitamente si
