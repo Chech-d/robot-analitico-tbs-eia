@@ -2,14 +2,13 @@
 Punto de entrada de la aplicación.
 Robot analítico para la preselección de activos - Teoría Moderna de
 Portafolios, Tech Business School - Universidad EIA.
-
-EDITEN los valores de identidad de más abajo antes de la primera entrega.
 """
 import json
 
 import pandas as pd
 import streamlit as st
 
+from src import access_log
 from src.analytics import (
     FREQUENCY_PERIODS_PER_YEAR,
     MIN_DIAGNOSTICS_N,
@@ -66,17 +65,18 @@ from src.risk_rules import (
 DEV_MODE = True
 
 # ---------------------------------------------------------------------------
-# IDENTIDAD DEL EQUIPO (RF-01) — EDITAR ANTES DE ENTREGAR
+# IDENTIDAD DEL EQUIPO (RF-01)
 # ---------------------------------------------------------------------------
-SYSTEM_NAME = "EDITAR: Nombre del sistema"
-TEAM_NAME = "EDITAR: Nombre del equipo"
+SYSTEM_NAME = "Pre - Asset Allocation Analytic Bot"
+TEAM_NAME = "Equipo DPST"
 MEMBERS = [
-    "EDITAR: Integrante 1",
-    "EDITAR: Integrante 2",
-    "EDITAR: Integrante 3",
+    "Sergio Delgado Laverde",
+    "David Angel Perez",
+    "Pedro Velez Uribe",
+    "Tomás Giraldo Gomez",
 ]
 VERSION = "0.1.0"
-LAST_UPDATE = "2026-09-12"
+LAST_UPDATE = "2026-09-14"
 
 EXECUTION_POLICY_SUMMARY = (
     "Piloto académico restringido. Posición larga únicamente. Rendimiento "
@@ -108,11 +108,21 @@ def render_header() -> None:
         st.info(EXECUTION_POLICY_SUMMARY)
 
 
-def render_disclaimer_gate() -> None:
+def render_disclaimer_gate(user_name: str, user_email: str) -> None:
     """
     Bloquea el análisis hasta que el usuario acepte, por separado, la
     autorización de privacidad y el disclaimer académico (sección 3.3).
     Detiene la ejecución (st.stop) si falta alguna de las dos.
+
+    La primera vez que ambos consentimientos quedan aceptados en esta
+    sesión del navegador, registra el acceso (nombre, correo autoinformados
+    y ambos consentimientos, con fecha/hora UTC) en un archivo local -
+    `data/access_log.sqlite3`, ver `src/access_log.py` -. El curso no
+    suministró base de datos, sink ni gestor de secretos institucional
+    (sección 7.1, punto 46 de la guía); este registro local es la evidencia
+    parcial que se implementó ante esa ausencia. No sustituye el modelo
+    completo de sesión/auditoría/purga de la Fase 9 (ver TRACEABILITY.md,
+    RF-02, RNF-03).
     """
     st.subheader("Antes de continuar")
     st.warning(DISCLAIMER_TEXT)
@@ -130,10 +140,12 @@ def render_disclaimer_gate() -> None:
     )
 
     if not (privacy_ok and disclaimer_ok):
+        st.session_state["access_logged"] = False
         st.stop()
 
-    # TODO (Fase 9): registrar ambos consentimientos como eventos separados
-    # y persistirlos junto con perfil/sesión/evento/outbox en una transacción.
+    if not st.session_state.get("access_logged", False):
+        access_log.log_access(user_name, user_email, privacy_ok, disclaimer_ok)
+        st.session_state["access_logged"] = True
 
 
 def render_historical_analysis() -> None:
@@ -685,7 +697,7 @@ def main() -> None:
         user = require_login()  # detiene la ejecución si no hay sesión activa
         user_name, user_email = getattr(user, "name", "?"), getattr(user, "email", "?")
 
-    render_disclaimer_gate()
+    render_disclaimer_gate(user_name, user_email)
 
     st.success(f"Sesión iniciada como {user_name} ({user_email})")
 

@@ -5,45 +5,45 @@ cada requisito. Base: sección 8.2 de la guía evaluativa.
 
 | RF/RNF | Pruebas | Rúbrica | Entregable esperado | Evidencia (commit/archivo) |
 |---|---|---|---|---|
-| RF-01 | T-18, T-25 | G1, G8 | D1, D3, D5, D11 | |
-| RF-02 | T-18 a T-24 | G10 | D1, D5, D6, D7 | |
-| RF-03 | T-04 a T-06 | G2, G7 | D1, D6, D10 | |
-| RF-04 | T-07 a T-10 | G5, G8 | D1, D6 | |
-| RF-05 | T-03 | G2 | D3, D6 | |
-| RF-06 | T-01 a T-03 | G2 | D6 | |
-| RF-07 | T-01, T-07 | G2, G3 | D6 | |
-| RF-08 | T-03, T-06 | G2 | D6 | |
-| RF-09 | T-04, T-25 | G3, G8 | D1, D11 | |
-| RF-10 | T-01, T-07 | G3 | D6 | |
-| RF-11 | T-01, T-07 | G3, G4, G6 | D6, D10 | |
-| RF-12 | T-04, T-12 | G3, G4 | D10 | |
-| RF-13 | T-11 | G5 | D6 | |
-| RF-14 | T-08, T-09, T-11 | G5 | D6, D10 | |
-| RF-15 | T-11 | G5 | D6 | |
-| RF-16 | T-15 | G6 | D6 | |
-| RF-17 | T-14 | G6 | D6 | |
-| RF-18 | T-13, T-14 | G6 | D6 | |
-| RF-19 | T-05, T-16 | G7 | D10 | |
-| RF-20 | T-16 | G7 | D6, D10 | |
-| RF-21 | T-17 | G7 | D10 | |
-| RF-22 | T-04, T-05 | G7, G8, G11 | D10, D12 | |
-| RNF-01 | T-25 | G8 | D1, D11, D12 | |
-| RNF-02 | T-24, T-25 | G9 | D1, D4, D5, D12 | |
-| RNF-03 | T-18 a T-24 | G10 | D5, D6, D7, D12 | |
-| RNF-04 | T-01 a T-25 | G9 | D6, D12 | |
-| RNF-05 | Revisión documental | G11 | D3, D8, D9, D12 | |
+| RF-01 | T-18, T-25 | G1, G8 | D1, D3, D5, D11 | `app.py::render_header` (identidad, versión, avatar), `app.py::render_disclaimer_gate` (disclaimer + doble consentimiento, `st.stop()` si falta alguno). El curso confirmó que no va a suministrar BD/sink/gestor de secretos (punto 46 de la guía); como evidencia parcial ante esa ausencia, `src/access_log.py` registra localmente (fecha/hora UTC, nombre, correo autoinformados, ambos consentimientos) la primera vez que se aceptan en cada sesión (`data/access_log.sqlite3`, excluido de git, revisable con `scripts/ver_registro_accesos.py`). Persistencia como evento de auditoría inmutable, con identidad verificada por OIDC, sesión lógica y purga automática: sigue pendiente (Fase 9). |
+| RF-02 | T-18 a T-24 | G10 | D1, D5, D6, D7 | Esqueleto en `src/auth.py`. **Pendiente (Fase 9):** login OIDC real, allowlist, sesión lógica persistente, transacción perfil/consentimiento/evento/outbox. Actualmente `DEV_MODE=True` en `app.py::main` sustituye el login por campos simulados para poder probar el resto de la app. |
+| RF-03 | T-04 a T-06 | G2, G7 | D1, D6, D10 | `app.py::main` (un solo ticker), `app.py::render_comparison` (colección dinámica de tickers vía `st.text_area`, parseo/dedupe), `src/data.py::fetch_many`. Pruebas: `tests/unit/test_comparison_fixture.py::test_20_valid_assets_processed_map2001`, `test_invalid_ticker_does_not_remove_20_valid_fail20p1_01`. |
+| RF-04 | T-07 a T-10 | G5, G8 | D1, D6 | `app.py::main` (fecha inicial/final, frecuencia), `app.py::render_forecast` (radio Cantidad de periodos / Fecha objetivo, `max_valid_horizon` como límite justificado por los datos). `src/forecasting.py::periods_until, max_valid_horizon, is_walkforward_sufficient, walkforward_min_train`. Pruebas: `tests/unit/test_forecasting_models.py::test_horizon_valid_within_limit_horizon01`, `test_horizon_27_violates_sufficiency_rule_horizon01`, `test_max_valid_horizon_horizon01`, `test_horizon_invalid_values_rejected`. |
+| RF-05 | T-03 | G2 | D3, D6 | `src/data.py::fetch_asset_data` (yfinance, `auto_adjust=True`, `fast_info.currency`/`.timezone`), mostrado en `app.py::main`. Pruebas: `tests/unit/test_data_provider.py::test_provider_valid_response`. |
+| RF-06 | T-01 a T-03 | G2 | D6 | `src/data.py::_clean_prices` (orden, dedupe, descarta no positivos/faltantes). Pruebas: `tests/unit/test_data_provider.py::test_provider_nonpositive_price_dropped_but_valid_remain`, `test_provider_all_nonpositive_prices_insufficient_sample`. |
+| RF-07 | T-01, T-07 | G2, G3 | D6 | `src/data.py::resample_prices` (remuestrea antes de calcular rendimientos). Prueba: `tests/unit/test_returns_and_stats.py::test_resample_before_returns_aapl_resample01` (AAPL real del fixture, semanal W-FRI y mensual ME). |
+| RF-08 | T-03, T-06 | G2 | D6 | `src/data.py::fetch_asset_data` (captura excepción, respuesta vacía, ticker vacío), `fetch_many` (aísla fallos sin detener el lote). Pruebas: todo `tests/unit/test_data_provider.py` (5 casos con mocks: válido, vacío, timeout, todo no-positivo, ticker vacío) + `test_fetch_many_isolates_failures_without_stopping_batch` + `tests/unit/test_comparison_fixture.py::test_invalid_ticker_does_not_remove_20_valid_fail20p1_01`. |
+| RF-09 | T-04, T-25 | G3, G8 | D1, D11 | `src/charts.py::price_chart, return_chart`, mostrados en `app.py::render_historical_analysis` (tabs "Precio"/"Rendimientos") con ticker, unidad, frecuencia, fechas y fuente en el título/caption. |
+| RF-10 | T-01, T-07 | G3 | D6 | `src/analytics.py::log_returns` (única función de rendimiento en todo el sistema; reutilizada en `app.py`, `src/comparison.py` y `src/forecasting.py`, ninguna ruta con rendimientos simples). Prueba: `tests/unit/test_returns_and_stats.py::test_log_returns_known_values_log01`. |
+| RF-11 | T-01, T-07 | G3, G4, G6 | D6, D10 | `src/analytics.py::descriptive_stats, annualize_mean, annualize_vol`, mostrado en `app.py::render_historical_analysis` (tab "Descriptivos"). Pruebas: `tests/unit/test_returns_and_stats.py::test_descriptive_stats_known_values_stat01`, `test_annualization_factors_freq01`. |
+| RF-12 | T-04, T-12 | G3, G4 | D10 | `src/analytics.py::drawdown_series, max_drawdown, recent_window_stats` (ventana parcial si T<m; cuantiles tipo 7 y asimetría/curtosis de Fisher por defecto de pandas), `app.py::render_historical_analysis` (tab "Descriptivos", métrica de drawdown). |
+| RF-13 | T-11 | G5 | D6 | `src/forecasting.py::fit_random_walk, fit_lognormal_drift, FORECAST_MODELS`. Pruebas: `tests/unit/test_forecasting_models.py::test_model_a_terminal_distribution`, `test_model_b_terminal_distribution`. |
+| RF-14 | T-08, T-09, T-11 | G5 | D6, D10 | `src/forecasting.py::forecast_path, terminal_distribution, terminal_moments`, `app.py::render_forecast` (tabs "Trayectoria 1..H"/"Distribución terminal"). Pruebas: `tests/unit/test_forecasting_models.py::test_forecast_path_model_b_path01` (trayectoria analítica exacta h=1,2,3). |
+| RF-15 | T-11 | G5 | D6 | `src/forecasting.py::walk_forward_validate, is_walkforward_sufficient, walkforward_min_train, WALKFORWARD_ORIGINS`, `app.py::render_forecast` (tab "Validación walk-forward"). Prueba: `tests/unit/test_forecasting_models.py::test_walk_forward_aapl_wf01` (AAPL real, T=539, m=252, H=20, orígenes 510-519, RMSE/MAE/cobertura/dirección exactos contra el fixture oficial). |
+| RF-16 | T-15 | G6 | D6 | `src/risk_rules.py::compute_var` (VaR fraccional y monetario, piso en cero, 95%/99%). Pruebas: `tests/unit/test_risk_rules.py::test_var_99_model_a_var99a01`, `test_var_99_model_b_var99b01`. |
+| RF-17 | T-14 | G6 | D6 | `src/risk_rules.py::evaluate_signal` (E, SL_H, TP_H, P_BE, D_neto, U_neto, BR_neto, costos c_b/c_s, todas las condiciones de 5.7). Pruebas: `tests/unit/test_risk_rules.py::test_constant_prices_no_signal_const01`, `test_costs_and_levels_model_b_costb01`. |
+| RF-18 | T-13, T-14 | G6 | D6 | `src/risk_rules.py::terminal_probabilities` (ganar/perder/neutral, rama determinista con épsilon). Pruebas: `tests/unit/test_risk_rules.py::test_costs_and_levels_model_b_costb01` (prob_win/prob_lose), `test_constant_prices_no_signal_const01` (rama determinista, prob_neutral=1). |
+| RF-19 | T-05, T-16 | G7 | D10 | `src/comparison.py::build_comparison, AssetSummary` (media y volatilidad anualizadas históricas), `src/charts.py::risk_return_map`. Pruebas: `tests/unit/test_comparison_fixture.py::test_20_valid_assets_processed_map2001`, `test_asset_matches_expected_results` (parametrizada, 20 tickers, contra `Resultados_esperados_20_activos_TBS_EIA.csv`). |
+| RF-20 | T-16 | G7 | D6, D10 | `src/comparison.py::dominates, non_dominated_tickers` (atol=1e-12, rtol=1e-10), intersección común de fechas y bloqueo de moneda incompatible en `build_comparison`. Pruebas: `test_non_dominated_classification_matches_expected`, `test_map_coordinates_do_not_depend_on_horizon_maph01` (las coordenadas no dependen de H). |
+| RF-21 | T-17 | G7 | D10 | `src/comparison.py::preselect_max_mean_under_risk_limit, preselect_min_vol_under_min_mean, preselect_max_rvr, preselect_non_dominated` (todas devuelven todos los empates, nunca fuerzan selección). Prueba: `test_max_rvr_selection_matches_expected_pg` (PG, único con RVR máximo, coincide con el archivo oficial). |
+| RF-22 | T-04, T-05 | G7, G8, G11 | D10, D12 | `src/comparison.py::processed_prices_export, comparison_table, export_parameters`, `app.py::render_comparison` (tab "Exportar", 3 `st.download_button`: precios procesados CSV, tabla comparativa CSV, parámetros JSON, con fecha y fuente). |
+| RNF-01 | T-25 | G8 | D1, D11, D12 | Pendiente (Fase 12: despliegue con URL restringida a la allowlist del curso). |
+| RNF-02 | T-24, T-25 | G9 | D1, D4, D5, D12 | Pendiente (Fase 9: healthcheck de web/BD/scheduler/notifications_worker/lifecycle_worker). |
+| RNF-03 | T-18 a T-24 | G10 | D5, D6, D7, D12 | Parcial: `src/access_log.py` deja un registro local no verificado de acceso/consentimiento (ver evidencia de RF-01) ante la confirmación de que el curso no suministrará BD/sink/gestor de secretos. Pendiente (Fase 9): identidad verificada por OIDC, allowlist, mínimo privilegio, purga, `deletion_markers`, gestión de secretos. |
+| RNF-04 | T-01 a T-25 | G9 | D6, D12 | Suite `tests/` completa para los casos no relacionados con seguridad: 54 pruebas pasando (`pytest tests/ -v`), verificadas con tolerancia atol=1e-8/rtol=1e-10 contra los fixtures oficiales de la guía (`Fixture_20_activos_sintetico_TBS_EIA.csv`, `Resultados_esperados_20_activos_TBS_EIA.csv`). Ninguna función de señal o preselección fuerza un resultado: `SignalResult.ok=False` y `preselect_*` devolviendo lista vacía están cubiertos por prueba. Pendiente: T-18 a T-24 (seguridad/sesión/worker, Fase 9). |
+| RNF-05 | Revisión documental | G11 | D3, D8, D9, D12 | En curso (Fase 11): `README.md` (política de ejecución y referencias completadas), `AI_USAGE.md` (registro por fase), `TRACEABILITY.md` (este archivo). Pendiente: `CONTRIBUTIONS.md` con los datos reales del equipo. |
 
 ## Entregables (D1-D12)
 
-- D1. URL HTTPS restringida a la allowlist.
+- D1. URL HTTPS restringida a la allowlist. **Pendiente (Fase 12).**
 - D2. Repositorio Git y commit final etiquetado.
-- D3. README completo (autores, ejecución, fuente, ecuaciones, supuestos, licencias, disclaimer, APA 7).
+- D3. README completo (autores, ejecución, fuente, ecuaciones, supuestos, licencias, disclaimer, APA 7). **Completado en esta fase, salvo nombres del equipo.**
 - D4. Código modular, dependencias fijadas, `.env.example`/`secrets.toml.example` sin secretos.
-- D5. Diagrama, política de ejecución, aviso versionado, inventario de datos, purga.
-- D6. Pruebas T-01 a T-25, cobertura, fixtures, mocks, tolerancias.
-- D7. Evidencia anonimizada del flujo OIDC/consentimiento/sesión/outbox/worker/purga.
-- D8. `AI_USAGE.md`.
-- D9. `CONTRIBUTIONS.md`.
-- D10. Dos exportaciones de ejemplo (1 activo; 20 activos + 1 inválido).
-- D11. Video (máx. 5 min).
+- D5. Diagrama, política de ejecución, aviso versionado, inventario de datos, purga. Política de ejecución completada en `README.md`; purga/inventario de datos: **pendiente (Fase 9)**.
+- D6. Pruebas T-01 a T-25, cobertura, fixtures, mocks, tolerancias. **Completado para los casos no relacionados con seguridad (54 pruebas). Pendientes T-18 a T-24 (Fase 9).**
+- D7. Evidencia anonimizada del flujo OIDC/consentimiento/sesión/outbox/worker/purga. **Pendiente (Fase 9).**
+- D8. `AI_USAGE.md`. **Completado en esta fase.**
+- D9. `CONTRIBUTIONS.md`. **Pendiente: requiere los nombres, módulos y commits reales de cada integrante del equipo.**
+- D10. Dos exportaciones de ejemplo (1 activo; 20 activos + 1 inválido). **Pendiente: generar y guardar los archivos de ejemplo (Fase 12).**
+- D11. Video (máx. 5 min). **Pendiente (Fase 12).**
 - D12. `TRACEABILITY.md` (este archivo) enlazado al commit final.
