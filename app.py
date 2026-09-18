@@ -85,6 +85,66 @@ EXECUTION_POLICY_SUMMARY = (
     "Metodología para la política de ejecución completa."
 )
 
+# Descripciones cortas de cada prueba de diagnóstico (sección 5.4), mostradas
+# en la app para que quede claro qué mide cada una además del resultado.
+DIAGNOSTIC_DESCRIPTIONS = {
+    "Jarque-Bera (normalidad)": (
+        "Compara la asimetría y la curtosis de los rendimientos con las que "
+        "tendría una distribución normal perfecta. Entre más distintas sean, "
+        "más alto sale el estadístico y más bajo el p-valor."
+    ),
+    "Ljung-Box (dependencia)": (
+        "Revisa si los rendimientos de distintos días están correlacionados "
+        "entre sí (autocorrelación) hasta cierto número de rezagos. Si hay un "
+        "patrón que se repite en el tiempo, el estadístico sube y el p-valor "
+        "baja."
+    ),
+    "Brown-Forsythe (homocedasticidad)": (
+        "Divide la muestra en bloques cronológicos y compara si la "
+        "volatilidad (varianza) es parecida entre esos bloques. Si algún "
+        "bloque resulta mucho más volátil que otro, el estadístico sube y el "
+        "p-valor baja."
+    ),
+    "ARCH-LM (varianza condicional)": (
+        "Revisa si los periodos de alta volatilidad tienden a agruparse "
+        "('volatility clustering'), es decir, si la varianza de hoy depende "
+        "de la varianza de días recientes. Si existe ese patrón, el "
+        "estadístico sube y el p-valor baja."
+    ),
+}
+
+# Explicaciones cortas de cada criterio de preselección (RF-21, sección 5.8),
+# mostradas justo debajo del selector para que quede claro qué hace cada uno.
+CRITERION_EXPLANATIONS = {
+    "Máxima media histórica bajo límite de riesgo": (
+        "De los activos cuya volatilidad anualizada NO supera el límite que "
+        "definas abajo, escoge el que tenga la media histórica anualizada "
+        "más alta. Si ningún activo cumple ese límite de riesgo, no se "
+        "selecciona ninguno."
+    ),
+    "Mínima volatilidad bajo media mínima": (
+        "De los activos cuya media histórica anualizada sea al menos la que "
+        "definas abajo, escoge el que tenga la menor volatilidad anualizada. "
+        "Si ningún activo alcanza esa media mínima, no se selecciona "
+        "ninguno."
+    ),
+    "Máxima razón individual media-volatilidad (RVR)": (
+        "Calcula, para cada activo POR SEPARADO, su propia razón "
+        "media anualizada / volatilidad anualizada (una especie de "
+        "'rendimiento por unidad de riesgo' individual) y escoge el activo "
+        "con el valor más alto. No combina ni pondera activos entre sí, solo "
+        "compara activos individuales uno por uno."
+    ),
+    "Conjunto no dominado (media-volatilidad)": (
+        "Un activo está 'dominado' cuando existe otro activo del lote con "
+        "media igual o mayor Y volatilidad igual o menor al mismo tiempo (es "
+        "decir, otro activo es mejor o igual en las dos cosas a la vez). "
+        "Este criterio devuelve TODOS los activos que no están dominados por "
+        "ningún otro, así que puede devolver varios, no necesariamente uno "
+        "solo."
+    ),
+}
+
 # Texto mínimo obligatorio (guía, sección 3.3). No reducir su alcance.
 DISCLAIMER_TEXT = (
     "Esta aplicación fue desarrollada exclusivamente como actividad evaluativa del "
@@ -185,10 +245,25 @@ def render_historical_analysis() -> None:
             f"Último precio: {prices.iloc[-1]:.4f} ({prices.index[-1].date()}) · "
             f"Fuente: {result.source} · Moneda: {result.currency or 'N/D'}"
         )
+        with st.expander("Ver datos en tabla (alternativa accesible al gráfico)"):
+            st.dataframe(prices.tail(30).rename("precio_ajustado"))
 
     with tab_returns:
         st.plotly_chart(return_chart(returns, result.ticker, frequency), use_container_width=True)
         st.caption(f"Último log-rendimiento: {returns.iloc[-1]:.6f} ({returns.index[-1].date()})")
+        st.info(
+            "**¿Qué es un rendimiento logarítmico?** Es la variación del precio "
+            "entre un periodo y el anterior, calculada con el logaritmo natural: "
+            "g_t = ln(P_t / P_{t-1}). Un valor de 0.02 equivale aproximadamente a "
+            "una subida de 2% respecto al periodo anterior, y uno de -0.02 a una "
+            "caída de aproximadamente 2%. Se usa el logaritmo en vez del "
+            "porcentaje simple porque los rendimientos logarítmicos de varios "
+            "periodos se pueden sumar directamente para obtener el rendimiento "
+            "acumulado, y porque sus propiedades estadísticas son las que asumen "
+            "los modelos de esta guía (RF-10)."
+        )
+        with st.expander("Ver datos en tabla (alternativa accesible al gráfico)"):
+            st.dataframe(returns.tail(30).rename("log_rendimiento"))
 
     with tab_stats:
         stats = descriptive_stats(returns, periods_per_year)
@@ -239,6 +314,13 @@ def render_historical_analysis() -> None:
             "bloquea el análisis: se muestran como advertencias informativas, "
             "nunca como error."
         )
+        st.caption(
+            "**Regla de aceptación/rechazo (para las cuatro pruebas):** cada "
+            "una compara su p-valor contra alfa = 5%. Si el p-valor es MENOR "
+            "que 5%, se rechaza la hipótesis nula (el supuesto no se cumple "
+            "en esta muestra, ícono ⚠️); si es mayor o igual, no se rechaza "
+            "(el supuesto es razonable con esta muestra, ícono ✅)."
+        )
         if len(returns) < MIN_DIAGNOSTICS_N:
             st.info(
                 f"Muestra insuficiente para diagnósticos confiables "
@@ -249,6 +331,7 @@ def render_historical_analysis() -> None:
             for diag in run_diagnostics(returns):
                 icon = "⚠️" if diag.reject else "✅"
                 with st.expander(f"{icon} {diag.name}", expanded=diag.reject):
+                    st.write(f"**¿Qué revisa esta prueba?** {DIAGNOSTIC_DESCRIPTIONS.get(diag.name, '')}")
                     st.write(f"**Hipótesis nula:** {diag.hypothesis}")
                     st.write(f"**Parámetros:** {diag.parameters}")
                     col_a, col_b = st.columns(2)
@@ -625,6 +708,7 @@ def render_comparison() -> None:
             ],
             key="comparison_criterion",
         )
+        st.caption(CRITERION_EXPLANATIONS[criterion])
 
         if criterion == "Máxima media histórica bajo límite de riesgo":
             risk_limit = st.number_input(
