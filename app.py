@@ -54,6 +54,19 @@ from src.risk_rules import (
     evaluate_signal,
     terminal_probabilities,
 )
+from src.fx import fetch_fx_series
+from src.universe import build_return_matrix
+from src.risk_matrix import (
+    check_covariance_matrix,
+    correlation_from_covariance,
+    efficient_frontier,
+    gmv_weights,
+    max_expected_return_weights,
+    personal_optimal_weights,
+    portfolio_volatility,
+    sample_moments,
+    tangency_weights,
+)
 
 # ---------------------------------------------------------------------------
 # MODO DESARROLLO: mientras no tengan credenciales OIDC reales, dejen esto en
@@ -759,7 +772,201 @@ def render_comparison() -> None:
                 mime="application/json",
             )
 
+def render_portfolios() -> None:
+    """
+    Matriz de covarianzas/correlaciones y las 4 carteras de Markowitz
+    (escalamiento v2: src.fx + src.universe + src.risk_matrix).
 
+    A diferencia de render_comparison() (que es preselección individual),
+    aquí SÍ se calculan pesos, covarianzas y carteras — lo que v1 excluía
+    explícitamente. Posiciones largas únicamente, sin apalancamiento
+    (suma de pesos = 1, 0% a 100% por activo).
+    """
+    st.divider()
+    st.subheader("Portafolios: covarianza y las 4 carteras de Markowitz (v2)")
+    st.caption(
+        "Construye la matriz de covarianzas/correlaciones del universo elegido y las "
+        "4 carteras de la guía (mínima varianza, tangente, óptimo personal y máximo "
+        "rendimiento esperado). Admite moneda mixta (USD/COP, con conversión automática) "
+        "y acepta ETFs de bonos (TLT, IEF, SHY, etc.) como cualquier otro ticker."
+    )
+
+    default_tickers = (
+        "AAPL, MSFT, AMZN, GOOGL, META, NVDA, JPM, JNJ, XOM, PG, "
+        "KO, PEP, WMT, HD, COST, UNH, V, MA, CAT, MCD"
+    )
+    tickers_text = st.text_area(
+        "Tickers del universo (agrega o quita los que quieras)",
+        value=default_tickers, key="portfolio_tickers_text", height=80,
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        start_date = st.date_input("Fecha inicial", value=pd.Timestamp("2023-01-01"), key="portfolio_start")
+    with col2:
+        end_date = st.date_input("Fecha final", value=pd.Timestamp.today(), key="portfolio_end")
+    with col3:
+        frequency = st.selectbox("Frecuencia", list(FREQUENCY_RULES.keys()), key="portfolio_frequency")
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        base_currency = st.selectbox("Moneda base", ["USD", "COP"], key="portfolio_base_currency")
+    with col5:
+        rf_annual = st.number_input(
+            "Tasa libre de riesgo anual (rf)", min_value=0.0, value=0.04, step=0.001,
+            format="%.4f", key="portfolio_rf_input",
+        )
+    with col6:
+        gamma = st.number_input(
+            "Aversión al riesgo del inversionista (gamma, para el óptimo personal)",
+            min_value=0.01, value=5.0, step=0.5, key="portfolio_gamma",
+        )
+
+    if st.button("Construir portafolios"):
+        raw_tickers = [
+            t.strip().upper() for chunk in tickers_text.split(",") for t in chunk.split("\n")
+        ]
+        tickers, seen = [], set()
+        for t in raw_tickers:
+            if t and t not in seen:
+                tickers.append(t)
+                seen.add(t)
+
+        if len(tickers) < 2:
+            st.error("Escribe al menos 2 tickers para construir un portafolio.")
+        else:
+            with st.spinner(f"Descargando {len(tickers)} activos y armando el universo..."):
+                assets = fetch_many(tickers, start_date, end_date, frequency)
+                periods_per_year = FREQUENCY_PERIODS_PER_YEAR.get(frequency, 252)
+
+                currencies_present = {
+                    a.currency.upper() for a in assets.values() if a.ok and a.currency
+                }
+                fx_rates = {}
+                fx_errors = []
+                for currency in currencies_present - {base_currency}:
+                    try:
+                        fx_rates[currency] = fetch_fx_series(currency, start_date, end_date)
+                    except ValueError as exc:
+                        fx_errors.append(f"{currency}: {exc}")
+
+                matrix, result = build_return_matrix(
+                    assets, frequency, periods_per_year, base_currency,
+                    fx_rates_quote_per_usd=fx_rates or None,
+                )
+
+            st.session_state["portfolio_matrix"] = matrix
+            st.session_state["portfolio_comparison"] = result
+            st.session_state["portfolio_rf_period"] = rf_annual / periods_per_year
+            st.session_state["portfolio_gamma_value"] = gamma
+            st.session_state["portfolio_periods_per_year"] = periods_per_year
+            if fx_errors:
+                st.warning("No se pudo obtener la tasa FX para: " + "; ".join(fx_errors))
+
+    matrix = st.session_state.get("portfolio_matrix")
+    result = st.session_state.get("portfolio_comparison")
+    if matrix is None or result is None:
+        return
+
+    if not result.ok or matrix.empty:
+        st.error(f"No se pudo construir el universo: {result.reason}")
+        if result.excluded:
+            with st.expander(f"Activos excluidos ({len(result.excluded)})"):
+                for e in result.excluded:
+                    st.write(f"- **{e.ticker}**: {e.reason}")
+        return
+
+    if len(matrix.columns) < 2:
+        st.warning("Se necesitan al menos 2 activos válidos en el universo para construir carteras.")
+        return
+
+    st.success(
+        f"{len(matrix.columns)} activos en el universo, moneda base {result.base_currency}, "
+        f"ventana común {result.common_start.date()} a {result.common_end.date()} "
+        f"({len(matrix)} retornos)."
+    )
+    if result.excluded:
+        with st.expander(f"Activos excluidos de este universo ({len(result.excluded)})"):
+            for e in result.excluded:
+                st.write(f"- **{e.ticker}**: {e.reason}")
+
+    try:
+        mu, sigma = sample_moments(matrix)
+    except ValueError as exc:
+        st.error(f"No se pudo estimar mu/Sigma: {exc}")
+        return
+
+    diag = check_covariance_matrix(sigma)
+    corr = correlation_from_covariance(sigma)
+    rf_period = st.session_state["portfolio_rf_period"]
+    gamma_value = st.session_state["portfolio_gamma_value"]
+    periods_per_year = st.session_state["portfolio_periods_per_year"]
+    bounds = [(0.0, 1.0)] * len(sigma)
+
+    tab_cov, tab_port, tab_frontier = st.tabs(
+        ["Matriz de covarianzas/correlaciones", "Las 4 carteras", "Frontera eficiente"]
+    )
+
+    with tab_cov:
+        st.write(
+            f"Diagnóstico: simétrica={diag['is_symmetric']}, PSD={diag['is_psd']}, "
+            f"singular={diag['is_singular']}, número de condición={diag['condition_number']:.2f}"
+        )
+        st.markdown("**Correlaciones**")
+        st.dataframe(corr.style.format("{:.3f}"))
+        st.markdown("**Covarianzas (por periodo, sin anualizar)**")
+        st.dataframe(sigma.style.format("{:.6f}"))
+
+    with tab_port:
+        try:
+            w_gmv = gmv_weights(sigma, bounds=bounds)
+            w_tan = tangency_weights(mu, sigma, rf_period, bounds=bounds)
+            w_per = personal_optimal_weights(mu, sigma, gamma_value, bounds=bounds)
+            w_max = max_expected_return_weights(mu, sigma, bounds=bounds)
+        except Exception as exc:
+            st.error(f"No se pudieron calcular las carteras: {exc}")
+        else:
+            rows = []
+            for name, w in [
+                ("Mínima varianza (GMV)", w_gmv),
+                ("Tangente (máx. Sharpe)", w_tan),
+                (f"Óptimo personal (gamma={gamma_value:g})", w_per),
+                ("Máximo rendimiento esperado", w_max),
+            ]:
+                ret_annual = float(w @ mu) * periods_per_year
+                vol_annual = portfolio_volatility(w, sigma) * (periods_per_year ** 0.5)
+                rows.append({
+                    "cartera": name,
+                    "rendimiento anualizado": ret_annual,
+                    "riesgo anualizado": vol_annual,
+                })
+            st.dataframe(pd.DataFrame(rows).set_index("cartera").style.format("{:.2%}"))
+
+            st.markdown("**Composición de cada cartera**")
+            weights_table = pd.DataFrame({
+                "Mínima varianza (GMV)": w_gmv,
+                "Tangente": w_tan,
+                "Óptimo personal": w_per,
+                "Máximo rendimiento": w_max,
+            })
+            st.dataframe(weights_table.style.format("{:.2%}"))
+
+    with tab_frontier:
+        try:
+            frontier = efficient_frontier(mu, sigma, bounds=bounds, n_points=25)
+        except Exception as exc:
+            st.error(f"No se pudo construir la frontera: {exc}")
+        else:
+            plot_df = pd.DataFrame({
+                "riesgo anualizado": frontier["risk"] * (periods_per_year ** 0.5),
+                "rendimiento anualizado": frontier["target_return"] * periods_per_year,
+                "eficiente": frontier["is_efficient"],
+            })
+            st.scatter_chart(plot_df, x="riesgo anualizado", y="rendimiento anualizado", color="eficiente")
+            st.caption(
+                "Los puntos marcados como eficientes (True) pertenecen a la rama eficiente; "
+                "los demás son la rama inferior no eficiente de la misma curva de mínima varianza."
+            )
 def main() -> None:
     render_header()
 
@@ -826,6 +1033,7 @@ def main() -> None:
     render_historical_analysis()
     render_forecast()
     render_comparison()
+    render_portfolios()
 
     if not DEV_MODE and st.button("Cerrar sesión"):
         st.logout()
