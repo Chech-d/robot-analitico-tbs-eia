@@ -67,6 +67,21 @@ from src.risk_matrix import (
     sample_moments,
     tangency_weights,
 )
+from src.black_litterman import (
+    View,
+    active_views,
+    assemble_views,
+    black_litterman_posterior,
+    check_black_litterman_inputs,
+    excess_from_total_view,
+    implied_equilibrium_returns,
+)
+from src.rebalance import (
+    drifted_weights,
+    needs_rebalance,
+    simulate_rebalance_to_target,
+    turnover_unilateral,
+)
 
 # ---------------------------------------------------------------------------
 # MODO DESARROLLO: mientras no tengan credenciales OIDC reales, dejen esto en
@@ -967,6 +982,335 @@ def render_portfolios() -> None:
                 "Los puntos marcados como eficientes (True) pertenecen a la rama eficiente; "
                 "los demás son la rama inferior no eficiente de la misma curva de mínima varianza."
             )
+def render_black_litterman() -> None:
+    """
+    Black-Litterman: prior de equilibrio + opiniones (views) del equipo,
+    con su incertidumbre, dan un rendimiento esperado "corregido" (mu_BL)
+    que se usa en las mismas carteras de Markowitz (escalamiento v2,
+    guía sección 6, src.black_litterman).
+
+    Requiere haber construido portafolios arriba primero (usa la misma
+    Sigma y el mismo universo).
+    """
+    st.divider()
+    st.subheader("Black-Litterman: opiniones del equipo (v2)")
+
+    matrix = st.session_state.get("portfolio_matrix")
+    comparison = st.session_state.get("portfolio_comparison")
+    if matrix is None or comparison is None or not comparison.ok or matrix.empty:
+        st.info("Primero construye los portafolios arriba (botón 'Construir portafolios').")
+        return
+
+    try:
+        mu, sigma = sample_moments(matrix)
+    except ValueError as exc:
+        st.error(f"No se pudo estimar mu/Sigma: {exc}")
+        return
+
+    assets = list(sigma.index)
+    rf_period = st.session_state["portfolio_rf_period"]
+    periods_per_year = st.session_state["portfolio_periods_per_year"]
+    bounds = [(0.0, 1.0)] * len(sigma)
+
+    st.caption(
+        "pi (el 'prior') se calcula desde w_ref con pi=delta·Sigma·w_ref (sección 6.1 de la "
+        "guía). w_ref debe ser una referencia documentada por el equipo — aquí el valor por "
+        "defecto es igual peso (1/N); si usan otra (ej. capitalización de mercado), justifíquenla."
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        w_ref_mode = st.selectbox("Pesos de referencia (w_ref)", ["Igual peso (1/N)", "Personalizados"], key="bl_wref_mode")
+    with col2:
+        delta = st.number_input("Delta (aversión implícita de la referencia)", min_value=0.01, value=2.5, step=0.1, key="bl_delta")
+    with col3:
+        tau = st.number_input("Tau (escala de incertidumbre del prior)", min_value=0.001, value=0.05, step=0.01, format="%.3f", key="bl_tau")
+
+    if w_ref_mode == "Personalizados":
+        w_ref_raw = {}
+        cols = st.columns(min(len(assets), 5))
+        for i, a in enumerate(assets):
+            with cols[i % len(cols)]:
+                w_ref_raw[a] = st.number_input(f"w_ref {a}", min_value=0.0, value=1.0 / len(assets), key=f"bl_wref_{a}")
+        total = sum(w_ref_raw.values()) or 1.0
+        w_ref = pd.Series({a: v / total for a, v in w_ref_raw.items()})
+    else:
+        w_ref = pd.Series({a: 1.0 / len(assets) for a in assets})
+
+    st.markdown("**Opiniones (views) del equipo**")
+    st.session_state.setdefault("bl_views", [])
+
+    with st.form("bl_add_view_form", clear_on_submit=True):
+        tipo = st.radio("Tipo de view", ["Absoluta (un activo)", "Relativa (dos activos)"], horizontal=True)
+        if tipo == "Absoluta (un activo)":
+            activo = st.selectbox("Activo", assets, key="bl_abs_activo")
+            q_anual = st.number_input("Rendimiento TOTAL anual esperado para este activo", value=0.10, format="%.4f", key="bl_abs_q")
+            p_row = [1.0 if a == activo else 0.0 for a in assets]
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                activo_mejor = st.selectbox("Activo que se espera que SUPERE", assets, key="bl_rel_mejor")
+            with c2:
+                opciones_peor = [a for a in assets if a != activo_mejor] or assets
+                activo_peor = st.selectbox("Activo de referencia (al que supera)", opciones_peor, key="bl_rel_peor")
+            q_anual = st.number_input(
+                "Diferencia de rendimiento ANUAL esperada (positivo = el primero supera al segundo)",
+                value=0.02, format="%.4f", key="bl_rel_q",
+            )
+            p_row = [1.0 if a == activo_mejor else (-1.0 if a == activo_peor else 0.0) for a in assets]
+
+        omega_var = st.number_input(
+            "Varianza de incertidumbre de la view (Omega) — más alto = menos confianza en el número",
+            min_value=0.0, value=0.0001, format="%.6f", key="bl_omega",
+        )
+        confidence = st.slider("Confianza (0 excluye la view del cálculo)", 0.0, 1.0, 1.0, key="bl_confidence")
+        thesis = st.text_area("Tesis / justificación (obligatoria)", key="bl_thesis")
+        source = st.text_input("Fuente (opcional)", key="bl_source")
+        student_author = st.text_input("Quién la propone", key="bl_author")
+        sin_vencimiento = st.checkbox("Sin fecha de vencimiento", value=True, key="bl_sin_venc")
+        expires_at = None if sin_vencimiento else st.date_input("Vence el", key="bl_expira").isoformat()
+
+        agregar = st.form_submit_button("Agregar view")
+        if agregar:
+            if not thesis.strip():
+                st.error("La tesis es obligatoria (sección 6.2 de la guía: toda view se justifica).")
+            else:
+                q_periodo = q_anual / periods_per_year
+                q_excess = excess_from_total_view(q_periodo, rf_period, p_row)
+                st.session_state["bl_views"].append({
+                    "view_id": f"view-{len(st.session_state['bl_views']) + 1}",
+                    "student_author": student_author or "Sin especificar",
+                    "thesis": thesis.strip(),
+                    "assets": assets,
+                    "P_row": p_row,
+                    "Q_excess": q_excess,
+                    "Omega_variance": omega_var,
+                    "confidence": confidence,
+                    "source": source or None,
+                    "expires_at": expires_at,
+                })
+
+    if st.session_state["bl_views"]:
+        for i, v in enumerate(st.session_state["bl_views"]):
+            tipo_str = "relativa" if sum(1 for x in v["P_row"] if x != 0) > 1 else "absoluta"
+            cols_v = st.columns([5, 1])
+            with cols_v[0]:
+                st.write(
+                    f"**{v['view_id']}** ({tipo_str}, confianza={v['confidence']:.2f}): {v['thesis']}"
+                    + (f" — vence {v['expires_at']}" if v["expires_at"] else "")
+                )
+            with cols_v[1]:
+                if st.button("Eliminar", key=f"bl_del_{i}"):
+                    st.session_state["bl_views"].pop(i)
+                    st.rerun()
+    else:
+        st.caption("Sin views todavía — sin views, Black-Litterman conserva el prior (pi) sin cambios.")
+
+    if st.button("Calcular Black-Litterman"):
+        view_objects = [View(**v) for v in st.session_state["bl_views"]]
+        activas = active_views(view_objects)
+
+        pi = implied_equilibrium_returns(sigma, w_ref, delta)
+        if activas:
+            P, Q, Omega = assemble_views(activas, assets=assets)
+            bl_result = black_litterman_posterior(sigma, pi, tau, P, Q, Omega)
+            diag = check_black_litterman_inputs(sigma, P, Omega)
+        else:
+            bl_result = black_litterman_posterior(sigma, pi, tau, None, None, None)
+            diag = check_black_litterman_inputs(sigma)
+
+        st.session_state["bl_pi"] = pi
+        st.session_state["bl_result"] = bl_result
+        st.session_state["bl_diag"] = diag
+        st.session_state["bl_n_activas"] = len(activas)
+        st.session_state["bl_n_excluidas"] = len(view_objects) - len(activas)
+
+    bl_result = st.session_state.get("bl_result")
+    if bl_result is None:
+        return
+
+    if st.session_state.get("bl_n_excluidas", 0) > 0:
+        st.caption(
+            f"{st.session_state['bl_n_excluidas']} view(s) excluidas del cálculo (confianza 0 o vencidas) "
+            f"de {st.session_state['bl_n_excluidas'] + st.session_state['bl_n_activas']} totales."
+        )
+
+    with st.expander("Diagnóstico (dimensiones, simetría, PSD)"):
+        st.write(st.session_state["bl_diag"])
+
+    comparacion = pd.DataFrame({
+        "histórico": mu * periods_per_year,
+        "prior (pi)": (bl_result.pi + rf_period) * periods_per_year,
+        "posterior (mu_BL)": (bl_result.mu_posterior_excess + rf_period) * periods_per_year,
+    })
+    st.markdown("**Rendimiento esperado anualizado: histórico vs. prior vs. posterior**")
+    st.dataframe(comparacion.style.format("{:.2%}"))
+
+    if bl_result.n_views > 0:
+        mu_bl_periodo = bl_result.mu_posterior_excess + rf_period
+        gamma_value = st.session_state["portfolio_gamma_value"]
+        w_gmv = gmv_weights(sigma, bounds=bounds)
+        w_tan_bl = tangency_weights(mu_bl_periodo, sigma, rf_period, bounds=bounds)
+        w_per_bl = personal_optimal_weights(mu_bl_periodo, sigma, gamma_value, bounds=bounds)
+        w_max_bl = max_expected_return_weights(mu_bl_periodo, sigma, bounds=bounds)
+
+        st.markdown("**Carteras recalculadas con mu_BL (misma Sigma, sección 6.1)**")
+        st.session_state["bl_portfolio_weights"] = {
+            "Mínima varianza (GMV)": w_gmv,
+            "Tangente (BL)": w_tan_bl,
+            "Óptimo personal (BL)": w_per_bl,
+            "Máximo rendimiento (BL)": w_max_bl,
+        }
+        st.dataframe(pd.DataFrame(st.session_state["bl_portfolio_weights"]).style.format("{:.2%}"))
+def render_rebalance() -> None:
+    """
+    Rebalanceo con nueva información (escalamiento v2, guía sección 7,
+    src.rebalance). Simula invertir un capital inicial en una cartera
+    objetivo (al inicio de la ventana común) y ver si, después de que los
+    precios se movieron hasta el final de esa ventana, conviene rebalancear
+    o abstenerse — con costos cobrados sobre el nominal real negociado.
+
+    Requiere haber construido portafolios arriba primero (usa la misma
+    ventana común de precios y, si existen, las carteras ya calculadas).
+    """
+    st.divider()
+    st.subheader("Rebalanceo con nueva información (v2)")
+
+    matrix = st.session_state.get("portfolio_matrix")
+    comparison = st.session_state.get("portfolio_comparison")
+    if matrix is None or comparison is None or not comparison.ok or not comparison.common_prices:
+        st.info("Primero construye los portafolios arriba (botón 'Construir portafolios').")
+        return
+
+    try:
+        mu, sigma = sample_moments(matrix)
+    except ValueError as exc:
+        st.error(f"No se pudo estimar mu/Sigma: {exc}")
+        return
+
+    assets = list(sigma.index)
+    periods_per_year = st.session_state["portfolio_periods_per_year"]
+    rf_period = st.session_state["portfolio_rf_period"]
+    gamma_value = st.session_state["portfolio_gamma_value"]
+    bounds = [(0.0, 1.0)] * len(sigma)
+
+    opciones_cartera = ["Mínima varianza (GMV)", "Tangente", "Óptimo personal", "Máximo rendimiento esperado"]
+    bl_weights = st.session_state.get("bl_portfolio_weights")
+    if bl_weights:
+        opciones_cartera += [f"{nombre} (desde Black-Litterman)" for nombre in bl_weights.keys()]
+    opciones_cartera.append("Pesos personalizados")
+
+    cartera_elegida = st.selectbox("Cartera objetivo para el rebalanceo", opciones_cartera, key="rb_cartera_elegida")
+
+    if cartera_elegida == "Pesos personalizados":
+        pesos_raw = {}
+        cols = st.columns(min(len(assets), 5))
+        for i, a in enumerate(assets):
+            with cols[i % len(cols)]:
+                pesos_raw[a] = st.number_input(f"peso {a}", min_value=0.0, value=1.0 / len(assets), key=f"rb_peso_{a}")
+        total = sum(pesos_raw.values()) or 1.0
+        pesos_objetivo = pd.Series({a: v / total for a, v in pesos_raw.items()})
+        st.caption("Los pesos se normalizan automáticamente para sumar 1 (largo-solo, sin apalancamiento).")
+    elif cartera_elegida.endswith("(desde Black-Litterman)"):
+        nombre_bl = cartera_elegida.replace(" (desde Black-Litterman)", "")
+        pesos_objetivo = bl_weights[nombre_bl]
+    else:
+        if cartera_elegida == "Mínima varianza (GMV)":
+            pesos_objetivo = gmv_weights(sigma, bounds=bounds)
+        elif cartera_elegida == "Tangente":
+            pesos_objetivo = tangency_weights(mu, sigma, rf_period, bounds=bounds)
+        elif cartera_elegida == "Óptimo personal":
+            pesos_objetivo = personal_optimal_weights(mu, sigma, gamma_value, bounds=bounds)
+        else:
+            pesos_objetivo = max_expected_return_weights(mu, sigma, bounds=bounds)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        capital_inicial = st.number_input("Capital inicial a invertir", min_value=0.0, value=100000.0, step=1000.0, key="rb_capital")
+    with col2:
+        costo_por_nominal = st.number_input(
+            "Costo por nominal operado (fracción, ej. 0.001 = 0.1%)", min_value=0.0, value=0.001, format="%.4f", key="rb_costo"
+        )
+    with col3:
+        banda = st.number_input(
+            "Banda de no operación (desviación máxima tolerada por activo)", min_value=0.0, value=0.03, format="%.3f", key="rb_banda"
+        )
+
+    if st.button("Simular rebalanceo"):
+        common_prices = comparison.common_prices
+        precios_iniciales = pd.Series({t: s.iloc[0] for t, s in common_prices.items()}).reindex(assets)
+        precios_nuevos = pd.Series({t: s.iloc[-1] for t, s in common_prices.items()}).reindex(assets)
+
+        cantidades_iniciales = capital_inicial * pesos_objetivo.reindex(assets) / precios_iniciales
+        simple_returns = precios_nuevos / precios_iniciales - 1
+        w_pre, r_p = drifted_weights(pesos_objetivo.reindex(assets), simple_returns)
+        disparado, desviacion = needs_rebalance(w_pre, pesos_objetivo, banda)
+
+        st.session_state["rb_result"] = {
+            "precios_iniciales": precios_iniciales,
+            "precios_nuevos": precios_nuevos,
+            "cantidades_iniciales": cantidades_iniciales,
+            "w_pre": w_pre,
+            "r_p": r_p,
+            "disparado": disparado,
+            "desviacion": desviacion,
+            "pesos_objetivo": pesos_objetivo.reindex(assets),
+            "costo_por_nominal": costo_por_nominal,
+        }
+        if disparado:
+            rb = simulate_rebalance_to_target(
+                cantidades_iniciales, precios_nuevos, 0.0, pesos_objetivo.reindex(assets), costo_por_nominal
+            )
+            st.session_state["rb_simulacion"] = rb
+        else:
+            st.session_state["rb_simulacion"] = None
+
+    rb_result = st.session_state.get("rb_result")
+    if rb_result is None:
+        return
+
+    st.caption(
+        f"Ventana común: {comparison.common_start.date()} (inversión inicial) a "
+        f"{comparison.common_end.date()} (hoy). Retorno de cartera en ese periodo: {rb_result['r_p']:.2%}."
+    )
+
+    st.markdown("**Pesos por deriva de precios vs. objetivo**")
+    tabla_pesos = pd.DataFrame({
+        "objetivo": rb_result["pesos_objetivo"],
+        "antes de rebalancear (deriva)": rb_result["w_pre"],
+        "desviación": rb_result["desviacion"],
+    })
+    st.dataframe(tabla_pesos.style.format("{:.2%}"))
+
+    if not rb_result["disparado"]:
+        st.success(
+            "Ningún activo superó la banda de no operación — la política indica ABSTENERSE de "
+            "rebalancear (no se justifica pagar comisión por una desviación tan chica)."
+        )
+        return
+
+    st.warning("Al menos un activo superó la banda — corresponde rebalancear.")
+    rb = st.session_state.get("rb_simulacion")
+    if rb is None:
+        return
+
+    if not rb.feasible:
+        st.error(f"No se pudo simular el rebalanceo: {rb.reason}")
+        return
+
+    turnover = turnover_unilateral(rb_result["w_pre"], rb_result["pesos_objetivo"])
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("Costo total", f"${rb.cost:,.2f}")
+    col_b.metric("Nominal bruto operado", f"${rb.gross_notional_traded:,.2f}")
+    col_c.metric("Turnover unilateral", f"{turnover:.2%}")
+    col_d.metric("Caja final", f"${rb.cash_post:,.2f}")
+
+    st.markdown("**Operaciones (compra positiva, venta negativa)**")
+    tabla_trades = pd.DataFrame({
+        "nominal operado": rb.trades,
+        "cantidades nuevas": rb.new_quantities,
+    })
+    st.dataframe(tabla_trades.style.format({"nominal operado": "${:,.2f}", "cantidades nuevas": "{:.4f}"}))
+    st.caption(f"Patrimonio antes de costos: ${rb.value_pre:,.2f} · después de costos: ${rb.value_post:,.2f}")
 def main() -> None:
     render_header()
 
@@ -1034,6 +1378,8 @@ def main() -> None:
     render_forecast()
     render_comparison()
     render_portfolios()
+    render_black_litterman()
+    render_rebalance()
 
     if not DEV_MODE and st.button("Cerrar sesión"):
         st.logout()
