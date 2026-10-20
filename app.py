@@ -65,6 +65,7 @@ from src.risk_matrix import (
     personal_optimal_weights,
     portfolio_volatility,
     sample_moments,
+    simple_from_log_returns,
     tangency_weights,
 )
 from src.black_litterman import (
@@ -81,6 +82,18 @@ from src.rebalance import (
     needs_rebalance,
     simulate_rebalance_to_target,
     turnover_unilateral,
+)
+from src.capm import (
+    capital_allocation_line,
+    capm_country_extension,
+    capm_required_return,
+    estimate_beta,
+    ke_local_currency,
+    optimal_y_unconstrained,
+    portfolio_beta,
+    relever_beta,
+    security_market_line,
+    unlever_beta,
 )
 
 # ---------------------------------------------------------------------------
@@ -1311,6 +1324,179 @@ def render_rebalance() -> None:
     })
     st.dataframe(tabla_trades.style.format({"nominal operado": "${:,.2f}", "cantidades nuevas": "{:.4f}"}))
     st.caption(f"Patrimonio antes de costos: ${rb.value_pre:,.2f} · después de costos: ${rb.value_post:,.2f}")
+
+
+def render_capm() -> None:
+    """
+    Beta, CAPM, Hamada y CAL/SML (escalamiento v2, guía secciones 5.2 y 8,
+    src.capm). Usa el mismo universo y ventana común de render_portfolios().
+    """
+    st.divider()
+    st.subheader("Beta, CAPM y apalancamiento (v2)")
+
+    matrix = st.session_state.get("portfolio_matrix")
+    comparison = st.session_state.get("portfolio_comparison")
+    if matrix is None or comparison is None or not comparison.ok or matrix.empty:
+        st.info("Primero construye los portafolios arriba (botón 'Construir portafolios').")
+        return
+
+    rf_period = st.session_state["portfolio_rf_period"]
+    periods_per_year = st.session_state["portfolio_periods_per_year"]
+    gamma_value = st.session_state["portfolio_gamma_value"]
+    assets = list(matrix.columns)
+
+    benchmark_ticker = st.text_input(
+        "Ticker del benchmark para beta/CAPM", value="^GSPC", key="capm_benchmark_ticker",
+        help="Por defecto S&P 500 (^GSPC); cámbialo a cualquier ticker válido de Yahoo Finance.",
+    )
+
+    if st.button("Calcular beta y CAPM"):
+        with st.spinner(f"Descargando {benchmark_ticker} y calculando betas..."):
+            bench_data = fetch_asset_data(benchmark_ticker, comparison.common_start, comparison.common_end)
+            if not bench_data.ok:
+                st.session_state["capm_betas"] = None
+                st.error(f"No se pudo descargar el benchmark: {bench_data.error}")
+            else:
+                bench_prices = resample_prices(bench_data.prices, comparison.frequency)
+                bench_log_returns = log_returns(bench_prices["adjusted_close"])
+                bench_simple = simple_from_log_returns(bench_log_returns)
+
+                betas, errores = {}, {}
+                for ticker in assets:
+                    try:
+                        betas[ticker] = estimate_beta(matrix[ticker], bench_simple, rf_period=rf_period)
+                    except ValueError as exc:
+                        errores[ticker] = str(exc)
+
+                st.session_state["capm_betas"] = betas
+                st.session_state["capm_bench_errors"] = errores
+                st.session_state["capm_benchmark_ticker_used"] = benchmark_ticker
+
+    betas = st.session_state.get("capm_betas")
+    if not betas:
+        return
+
+    errores = st.session_state.get("capm_bench_errors", {})
+    if errores:
+        with st.expander(f"Activos sin beta calculable ({len(errores)})"):
+            for ticker, motivo in errores.items():
+                st.write(f"- **{ticker}**: {motivo}")
+
+    st.caption(
+        f"Benchmark usado: {st.session_state['capm_benchmark_ticker_used']}. El beta se calcula "
+        "por dos caminos (regresión OLS y Cov/Var manual) que deben coincidir -- están en la "
+        "misma tabla para verificarlo."
+    )
+    tabla_beta = pd.DataFrame({
+        "beta (OLS)": {t: r.beta for t, r in betas.items()},
+        "beta (manual Cov/Var)": {t: r.beta_manual for t, r in betas.items()},
+        "alpha": {t: r.alpha for t, r in betas.items()},
+        "error estándar": {t: r.se_beta for t, r in betas.items()},
+        "R2": {t: r.r_squared for t, r in betas.items()},
+        "n": {t: r.n for t, r in betas.items()},
+    })
+    st.dataframe(tabla_beta.style.format({
+        "beta (OLS)": "{:.4f}", "beta (manual Cov/Var)": "{:.4f}", "alpha": "{:.6f}",
+        "error estándar": "{:.4f}", "R2": "{:.3f}", "n": "{:.0f}",
+    }))
+
+    betas_series = pd.Series({t: r.beta for t, r in betas.items()})
+    w_tan, mu, sigma = None, None, None
+
+    try:
+        mu, sigma = sample_moments(matrix[list(betas.keys())])
+        bounds = [(0.0, 1.0)] * len(sigma)
+        w_gmv = gmv_weights(sigma, bounds=bounds)
+        w_tan = tangency_weights(mu, sigma, rf_period, bounds=bounds)
+        w_per = personal_optimal_weights(mu, sigma, gamma_value, bounds=bounds)
+        w_max = max_expected_return_weights(mu, sigma, bounds=bounds)
+
+        st.markdown("**Beta de cada cartera (suma ponderada de los betas de arriba)**")
+        beta_carteras = pd.Series({
+            "Mínima varianza (GMV)": portfolio_beta(w_gmv, betas_series),
+            "Tangente": portfolio_beta(w_tan, betas_series),
+            "Óptimo personal": portfolio_beta(w_per, betas_series),
+            "Máximo rendimiento esperado": portfolio_beta(w_max, betas_series),
+        })
+        st.dataframe(beta_carteras.to_frame("beta de cartera").style.format("{:.4f}"))
+    except Exception as exc:
+        st.warning(f"No se pudo calcular el beta de las carteras: {exc}")
+
+    st.markdown("**Hamada: desapalancar y reapalancar un beta**")
+    col1, col2 = st.columns(2)
+    with col1:
+        activo_hamada = st.selectbox("Activo de referencia", list(betas.keys()), key="capm_hamada_activo")
+        beta_L_actual = betas[activo_hamada].beta
+        st.caption(f"Beta actual de {activo_hamada}: {beta_L_actual:.4f}")
+        d_actual = st.number_input("D/E actual (deuda/patrimonio)", min_value=0.0, value=0.6, key="capm_de_actual")
+        tax = st.number_input("Tasa de impuesto", min_value=0.0, max_value=1.0, value=0.35, key="capm_tax")
+        beta_d = st.number_input("Beta de la deuda (0 = sin riesgo sistemático)", min_value=0.0, value=0.0, key="capm_beta_d")
+    with col2:
+        d_objetivo = st.number_input("D/E objetivo (estructura a reapalancar)", min_value=0.0, value=0.75, key="capm_de_objetivo")
+
+    beta_u = unlever_beta(beta_L_actual, d_actual, 1.0, tax, beta_d)
+    beta_l_objetivo = relever_beta(beta_u, d_objetivo, 1.0, tax, beta_d)
+    col_h1, col_h2 = st.columns(2)
+    col_h1.metric("Beta desapalancado (beta_U)", f"{beta_u:.4f}")
+    col_h2.metric(f"Beta reapalancado a D/E={d_objetivo:g}", f"{beta_l_objetivo:.4f}")
+
+    st.markdown("**CAPM: costo del patrimonio (Ke)**")
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        rf_usd = st.number_input("rf (anual)", min_value=0.0, value=0.043, format="%.4f", key="capm_rf")
+    with col4:
+        erp = st.number_input("ERP (prima de mercado, anual)", min_value=0.0, value=0.055, format="%.4f", key="capm_erp")
+    with col5:
+        usar_pais = st.checkbox("Agregar prima de riesgo país", value=False, key="capm_usar_pais")
+
+    if usar_pais:
+        col6, col7 = st.columns(2)
+        with col6:
+            crp = st.number_input("Prima de riesgo país (CRP)", min_value=0.0, value=0.032, format="%.4f", key="capm_crp")
+        with col7:
+            lambda_ = st.number_input("Lambda (sensibilidad al riesgo país)", min_value=0.0, value=1.0, key="capm_lambda")
+        ke_usd = capm_country_extension(rf_usd, beta_l_objetivo, erp, lambda_, crp)
+    else:
+        ke_usd = capm_required_return(rf_usd, beta_l_objetivo, erp)
+
+    st.metric("Ke (en la moneda de rf/ERP)", f"{ke_usd:.2%}")
+
+    convertir_cop = st.checkbox("Convertir Ke a pesos colombianos (COP)", value=False, key="capm_convertir_cop")
+    if convertir_cop:
+        col8, col9 = st.columns(2)
+        with col8:
+            inflacion_col = st.number_input("Inflación Colombia (anual)", min_value=0.0, value=0.045, format="%.4f", key="capm_inf_col")
+        with col9:
+            inflacion_usa = st.number_input("Inflación EE.UU. (anual)", min_value=0.0, value=0.025, format="%.4f", key="capm_inf_usa")
+        ke_cop = ke_local_currency(ke_usd, inflacion_col, inflacion_usa)
+        st.metric("Ke en COP", f"{ke_cop:.2%}")
+
+    if w_tan is not None:
+        st.markdown("**CAL (línea de asignación de capital) con la cartera tangente**")
+        mu_t = float(w_tan @ mu) * periods_per_year
+        sigma_t = portfolio_volatility(w_tan, sigma) * (periods_per_year ** 0.5)
+        y_vals = [i / 20 for i in range(0, 31)]  # 0.00 a 1.50
+        cal_rows = [capital_allocation_line(rf_usd, mu_t, sigma_t, y) for y in y_vals]
+        cal_df = pd.DataFrame(cal_rows, columns=["rendimiento esperado", "riesgo (sigma)"])
+        st.line_chart(cal_df.set_index("riesgo (sigma)"))
+        y_star = optimal_y_unconstrained(mu_t, rf_usd, sigma_t, gamma_value)
+        st.caption(
+            f"Cartera tangente: rendimiento anualizado {mu_t:.2%}, riesgo anualizado {sigma_t:.2%}. "
+            f"y* sin restricciones = {y_star:.3f} (y*>1 implica apalancarse; y*<0, venta en corto)."
+        )
+
+    st.markdown("**SML (línea de mercado de valores)**")
+    sml_df = pd.DataFrame({
+        "beta": betas_series,
+        "rendimiento requerido (SML)": security_market_line(rf_usd, betas_series, erp),
+        "rendimiento histórico anualizado": matrix[list(betas.keys())].mean() * periods_per_year,
+    })
+    st.dataframe(sml_df.style.format({
+        "beta": "{:.4f}", "rendimiento requerido (SML)": "{:.2%}", "rendimiento histórico anualizado": "{:.2%}",
+    }))
+    st.scatter_chart(sml_df, x="beta", y=["rendimiento requerido (SML)", "rendimiento histórico anualizado"])
+
+
 def main() -> None:
     render_header()
 
@@ -1380,6 +1566,7 @@ def main() -> None:
     render_portfolios()
     render_black_litterman()
     render_rebalance()
+    render_capm()
 
     if not DEV_MODE and st.button("Cerrar sesión"):
         st.logout()
