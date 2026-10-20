@@ -1,0 +1,30 @@
+{
+  "tipo": "sintetico",
+  "assets": [
+    "A",
+    "B"
+  ],
+  "moneda": "USD",
+  "precios_iniciales": [
+    100,
+    100
+  ],
+  "cantidades": [
+    60,
+    40
+  ],
+  "caja": 0,
+  "precios_nuevos": [
+    110,
+    95
+  ],
+  "pesos_objetivo": [
+    0.5,
+    0.5
+  ],
+  "costo_por_nominal": 0.001,
+  "fracciones": true,
+  "slippage": 0,
+  "flujos": 0,
+  "nota": "Objetivo sobre patrimonio posterior a costos. No permitir caja negativa."
+}

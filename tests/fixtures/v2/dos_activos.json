@@ -1,0 +1,36 @@
+{
+  "tipo": "caso_docente_dos_activos",
+  "assets": [
+    "A",
+    "B"
+  ],
+  "unidad": "retornos simples anuales decimales y covarianza decimal al cuadrado",
+  "mu": [
+    0.08,
+    0.14
+  ],
+  "Sigma": [
+    [
+      0.01,
+      0.004
+    ],
+    [
+      0.004,
+      0.04
+    ]
+  ],
+  "rho": 0.2,
+  "rf": 0.03,
+  "gamma": 5,
+  "bounds": [
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "fuente": "Ejemplo docente de dos activos y controles de elaboración propia."
+}
